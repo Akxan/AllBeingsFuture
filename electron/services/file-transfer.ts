@@ -123,4 +123,13 @@ export class FileTransferService {
     fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'))
     return filePath
   }
+
+  saveDroppedFile(filename: string, base64Data: string): string {
+    const tmpDir = path.join(os.tmpdir(), 'allbeingsfuture-drops')
+    fs.mkdirSync(tmpDir, { recursive: true })
+    const safeName = filename.replace(/[<>:"|?*]/g, '_')
+    const filePath = path.join(tmpDir, `${Date.now()}-${safeName}`)
+    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'))
+    return filePath
+  }
 }

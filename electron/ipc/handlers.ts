@@ -397,6 +397,7 @@ export function registerAllIpcHandlers(
   ipcMain.handle('FileTransferService.PrepareFile', (_e, filePath: string) => fileTransferService.prepareFile(filePath))
   ipcMain.handle('FileTransferService.ValidatePlatformLimit', (_e, file: any, platform: string) => fileTransferService.validatePlatformLimit(file, platform))
   ipcMain.handle('FileTransferService.SaveClipboardImage', (_e, base64: string, mime: string) => fileTransferService.saveClipboardImage(base64, mime))
+  ipcMain.handle('FileTransferService.SaveDroppedFile', (_e, filename: string, base64: string) => fileTransferService.saveDroppedFile(filename, base64))
 
   // ==============================================================
   // TrackerService

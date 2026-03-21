@@ -272,6 +272,24 @@ function MessageInput({
     event.preventDefault()
   }, [])
 
+  const saveAndAddFile = useCallback(async (file: File) => {
+    try {
+      const buffer = await file.arrayBuffer()
+      const bytes = new Uint8Array(buffer)
+      let binary = ''
+      for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i])
+      }
+      const base64 = btoa(binary)
+      const tempPath = await FileTransferService.SaveDroppedFile(file.name, base64)
+      if (tempPath) {
+        void addFileByPath(tempPath)
+      }
+    } catch (err: any) {
+      console.warn('Failed to save dropped file:', err?.message)
+    }
+  }, [addFileByPath])
+
   const handleDrop = useCallback((event: React.DragEvent) => {
     event.preventDefault()
     setDragging(false)
@@ -285,13 +303,10 @@ function MessageInput({
       if (file.type.startsWith('image/')) {
         addImageFile(file)
       } else {
-        const filePath = window.electronAPI?.getPathForFile?.(file) || (file as any).path
-        if (filePath) {
-          void addFileByPath(filePath)
-        }
+        void saveAndAddFile(file)
       }
     }
-  }, [addImageFile, addFileByPath])
+  }, [addImageFile, saveAndAddFile])
 
   useIpcEvent<string[]>('files-dropped', useCallback((paths: string[]) => {
     if (!paths || paths.length === 0) return
