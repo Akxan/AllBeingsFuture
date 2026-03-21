@@ -20,3 +20,10 @@ export function ValidatePlatformLimit(file: any, platform: string): Promise<void
 export function SaveClipboardImage(base64Data: string, mimeType: string): Promise<string> {
     return ipc("FileTransferService.SaveClipboardImage", base64Data, mimeType);
 }
+
+/**
+ * Save a dropped file to a temp directory and return its path.
+ */
+export function SaveDroppedFile(filename: string, base64Data: string): Promise<string> {
+    return ipc("FileTransferService.SaveDroppedFile", filename, base64Data);
+}
