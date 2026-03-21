@@ -222,11 +222,18 @@ function MessageInput({
 
   // Auto-send queued messages when streaming ends
   const prevStreamingRef = useRef(streaming)
+  const sendingRef = useRef(false)
   useEffect(() => {
-    if (prevStreamingRef.current && !streaming && messageQueue.length > 0) {
+    if (prevStreamingRef.current && !streaming && messageQueue.length > 0 && !sendingRef.current) {
       const [next, ...rest] = messageQueue
+      sendingRef.current = true
       setMessageQueue(rest)
-      void doSendMessage(next)
+      doSendMessage(next)
+        .catch(() => {
+          // Send failed — restore the message at front of queue
+          setMessageQueue((q) => [next, ...q])
+        })
+        .finally(() => { sendingRef.current = false })
     }
     prevStreamingRef.current = streaming
   }, [streaming, messageQueue, doSendMessage])

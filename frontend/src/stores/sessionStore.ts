@@ -227,6 +227,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         sessions: syncRuntimeStatus(state.sessions, id, false),
         ...(state.selectedId === id ? { streaming: false } : {}),
       }))
+      throw err
     }
   },
 
