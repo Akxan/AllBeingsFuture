@@ -372,8 +372,17 @@ export default function ConversationView({ session }: Props) {
 
       <div ref={scrollContainerRef} onScroll={handleScroll} data-scroll-container className="flex-1 overflow-y-auto px-5 py-5">
         <div className="mx-auto flex max-w-4xl flex-col gap-3">
-          {messages.length === 0 && !streaming ? (
-            <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-8 text-sm text-gray-300">
+          {!ready && messages.length === 0 ? (
+            /* Shimmer skeleton while session is initializing */
+            <div className="animate-fade-in space-y-4">
+              <div className="rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-8">
+                <div className="shimmer h-3 w-24 rounded-md" />
+                <div className="shimmer mt-4 h-5 w-48 rounded-md" />
+                <div className="shimmer mt-3 h-3 w-64 rounded-md" />
+              </div>
+            </div>
+          ) : messages.length === 0 && !streaming ? (
+            <div className="animate-scale-in rounded-2xl border border-white/[0.06] bg-white/[0.02] px-6 py-8 text-sm text-gray-300">
               <p className="text-[10px] font-medium uppercase tracking-[0.24em] text-gray-600">{isChildSession ? 'Sub-Agent' : 'Conversation'}</p>
               <h3 className="mt-3 text-lg font-semibold text-white">{session.name}</h3>
               <p className="mt-2 leading-7 text-gray-500">

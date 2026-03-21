@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, FolderTree, History } from 'lucide-react'
 import SessionItem from './SessionItem'
 import type { DirectoryGroupCardProps, TimeGroupCardProps } from './types'
@@ -43,12 +44,21 @@ function GroupShell({
           <ChevronRight size={14} className="text-gray-600" />
         </div>
       </button>
-      {!collapsed && (
-        <div className="space-y-1.5 px-2 py-2">
-          <div className="mx-1 mb-1 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
-          {children}
-        </div>
-      )}
+      <AnimatePresence initial={false}>
+        {!collapsed && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: 'easeInOut' }}
+          >
+            <div className="space-y-1.5 px-2 py-2">
+              <div className="mx-1 mb-1 h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
+              {children}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </section>
   )
 }
@@ -72,17 +82,18 @@ export function TimeGroupCard({
       onToggleCollapse={onToggleCollapse}
       icon={<History size={15} />}
     >
-      {group.sessions.map((session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          selected={session.id === selectedSessionId}
-          onSelect={onSelect}
-          onResume={onResume}
-          onEnd={onEnd}
-          onRemove={onRemove}
-          agents={agents?.[session.id]}
-        />
+      {group.sessions.map((session, index) => (
+        <div key={session.id} className="animate-slide-in-up" style={{ animationDelay: `${index * 30}ms`, animationFillMode: 'both' }}>
+          <SessionItem
+            session={session}
+            selected={session.id === selectedSessionId}
+            onSelect={onSelect}
+            onResume={onResume}
+            onEnd={onEnd}
+            onRemove={onRemove}
+            agents={agents?.[session.id]}
+          />
+        </div>
       ))}
     </GroupShell>
   )
@@ -108,17 +119,18 @@ export function DirectoryGroupCard({
       onToggleCollapse={onToggleCollapse}
       icon={<FolderTree size={15} />}
     >
-      {group.sessions.map((session) => (
-        <SessionItem
-          key={session.id}
-          session={session}
-          selected={session.id === selectedSessionId}
-          onSelect={onSelect}
-          onResume={onResume}
-          onEnd={onEnd}
-          onRemove={onRemove}
-          agents={agents?.[session.id]}
-        />
+      {group.sessions.map((session, index) => (
+        <div key={session.id} className="animate-slide-in-up" style={{ animationDelay: `${index * 30}ms`, animationFillMode: 'both' }}>
+          <SessionItem
+            session={session}
+            selected={session.id === selectedSessionId}
+            onSelect={onSelect}
+            onResume={onResume}
+            onEnd={onEnd}
+            onRemove={onRemove}
+            agents={agents?.[session.id]}
+          />
+        </div>
       ))}
     </GroupShell>
   )

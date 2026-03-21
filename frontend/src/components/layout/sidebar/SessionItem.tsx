@@ -31,7 +31,7 @@ export default function SessionItem({ session, selected, onSelect, onResume, onE
     >
       {/* Selected indicator bar */}
       {selected && (
-        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-8 rounded-r-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.4)]" />
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-8 rounded-r-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.4)] animate-scale-in origin-left" />
       )}
 
       {/* Main content */}
