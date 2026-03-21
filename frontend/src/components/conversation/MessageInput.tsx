@@ -277,22 +277,21 @@ function MessageInput({
     setDragging(false)
     dragCounterRef.current = 0
 
-    // File path extraction is handled by the preload capture-phase handler,
-    // which sends paths via IPC ('files-dropped'). The preload has direct
-    // access to webUtils.getPathForFile() and Node.js fs as fallback.
-    //
-    // Here we only handle image drops that need preview (e.g. browser image drops
-    // where the preload may not get a filesystem path).
     const droppedFiles = event.dataTransfer?.files
-    if (droppedFiles) {
-      for (let index = 0; index < droppedFiles.length; index += 1) {
-        const file = droppedFiles[index]
-        if (file.type.startsWith('image/')) {
-          addImageFile(file)
+    if (!droppedFiles || droppedFiles.length === 0) return
+
+    for (let index = 0; index < droppedFiles.length; index += 1) {
+      const file = droppedFiles[index]
+      if (file.type.startsWith('image/')) {
+        addImageFile(file)
+      } else {
+        const filePath = window.electronAPI?.getPathForFile?.(file) || (file as any).path
+        if (filePath) {
+          void addFileByPath(filePath)
         }
       }
     }
-  }, [addImageFile])
+  }, [addImageFile, addFileByPath])
 
   useIpcEvent<string[]>('files-dropped', useCallback((paths: string[]) => {
     if (!paths || paths.length === 0) return
