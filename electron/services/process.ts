@@ -633,6 +633,22 @@ export class ProcessService {
 
   async sendMessageWithImages(sessionId: string, message: string, images: Array<{data: string, mimeType: string}>): Promise<void> {
     const state = this.getOrCreateState(sessionId)
+    const scheduler = this.getOrCreateScheduler(sessionId)
+
+    // Use scheduler to decide dispatch strategy (same as sendMessage)
+    const dispatch = scheduler.enqueue(message, state.streaming, images)
+    if (!dispatch.dispatched) {
+      const window = this.getWindow()
+      if (window && !window.isDestroyed()) {
+        window.webContents.send('chat:message-queued', {
+          sessionId,
+          queueLength: dispatch.queueLength,
+          strategy: dispatch.strategy,
+        })
+      }
+      return
+    }
+
     state.streaming = true
     state.error = ''
 
@@ -1542,7 +1558,10 @@ export class ProcessService {
     const next = scheduler.flushPending()
     if (!next) return
     setImmediate(() => {
-      this.sendMessage(sessionId, next.text).catch((err) => {
+      const send = next.images && next.images.length > 0
+        ? this.sendMessageWithImages(sessionId, next.text, next.images)
+        : this.sendMessage(sessionId, next.text)
+      send.catch((err) => {
         appLog('error', `Failed to dispatch queued message for ${sessionId}: ${err.message}`, 'process')
       })
     })
