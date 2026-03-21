@@ -284,6 +284,36 @@
     backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.06);
   }
+
+  /* Shimmer / skeleton loading effect */
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.03) 25%,
+      rgba(255, 255, 255, 0.08) 50%,
+      rgba(255, 255, 255, 0.03) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite linear;
+  }
+
+  @keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+  }
+
+  /* Collapsible section with smooth height transition (CSS-only) */
+  .collapse-section {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.25s ease-out;
+  }
+  .collapse-section.is-open {
+    grid-template-rows: 1fr;
+  }
+  .collapse-section > * {
+    overflow: hidden;
+  }
 }
 
 @media (max-width: 1200px) {
