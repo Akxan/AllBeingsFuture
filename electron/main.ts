@@ -175,6 +175,7 @@ app.whenReady().then(async () => {
   // Initialize notification manager and wire bot push
   notificationManager = new NotificationManager(() => mainWindow)
   notificationManager.setBotPushService(botPushService)
+  processService!.setNotificationManager(notificationManager)
 
   // Create window and tray
   createWindow()

@@ -21,6 +21,7 @@ import { appLog } from './log.js'
 import { injectSupervisorPrompt, cleanupSupervisorPrompt, buildAllRulesContent } from './supervisor-prompt.js'
 import { OutputParser } from '../parser/OutputParser.js'
 import { StateInference } from '../parser/StateInference.js'
+import type { NotificationManager } from './notification-manager.js'
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool_use' | 'thinking'
@@ -100,6 +101,8 @@ export class ProcessService {
   private activeChildStack = new Map<string, string[]>()
   /** Reverse lookup: childSessionId → agent display name (for tagging parent messages) */
   private childSessionNames = new Map<string, string>()
+  /** Optional notification manager — sends system + bot notifications on turn complete/error */
+  private notificationManager: NotificationManager | null = null
 
   constructor(
     private db: Database,
@@ -141,6 +144,11 @@ export class ProcessService {
         win.webContents.send('parser:intervention', { sessionId, kind })
       }
     })
+  }
+
+  /** Attach a NotificationManager so turn-complete / error events trigger notifications */
+  setNotificationManager(manager: NotificationManager): void {
+    this.notificationManager = manager
   }
 
   private getOrCreateScheduler(sessionId: string): MessageScheduler {
@@ -492,6 +500,12 @@ export class ProcessService {
 
         // Flush pending messages from the scheduler
         this.flushSchedulerPending(sessionId)
+
+        // Send notification for top-level sessions (not child agents)
+        if (!doneSession?.parentSessionId && this.notificationManager) {
+          const sessionName = doneSession?.name || sessionId
+          this.notificationManager.notify('taskComplete', sessionId, sessionName)
+        }
         break
       }
 
@@ -519,6 +533,15 @@ export class ProcessService {
         this.finalizeChildAgents(sessionId, 'failed', false)
         // Clean up supervisor prompt on terminal error
         this.cleanupSupervisorPromptForSession(sessionId)
+
+        // Send error notification for top-level sessions
+        if (this.notificationManager) {
+          const errSession = this.sessionService.getById(sessionId)
+          if (!errSession?.parentSessionId) {
+            const sessionName = errSession?.name || sessionId
+            this.notificationManager.notify('error', sessionId, sessionName, state.error)
+          }
+        }
         break
       }
 
