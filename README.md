@@ -111,7 +111,7 @@ Skills are template-based and extensible via the `skill-creator` skill.
 ### Install & Run
 
 ```bash
-git clone https://github.com/anthropics/AllBeingsFuture.git
+git clone https://github.com/AllBeingsFuture/AllBeingsFuture.git
 cd AllBeingsFuture
 
 # Install dependencies (also installs frontend deps via postinstall)
