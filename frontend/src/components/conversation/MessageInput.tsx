@@ -5,7 +5,6 @@ import MessageTextEditor from './MessageTextEditor'
 import type { StickerResult } from '../../stores/stickerStore'
 import { useStickerStore } from '../../stores/stickerStore'
 import { FileTransferService } from '../../../bindings/allbeingsfuture/internal/services'
-import { useIpcEvent } from '../../hooks/useIpcEvent'
 import { useDraftStore } from '../../stores/draftStore'
 import type { ImageAttachment, FileAttachment } from '../../stores/draftStore'
 
@@ -307,14 +306,6 @@ function MessageInput({
       }
     }
   }, [addImageFile, saveAndAddFile])
-
-  useIpcEvent<string[]>('files-dropped', useCallback((paths: string[]) => {
-    if (!paths || paths.length === 0) return
-    for (const filePath of paths) {
-      if (!filePath) continue
-      void addFileByPath(filePath)
-    }
-  }, [addFileByPath]))
 
   const handlePaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const items = event.clipboardData?.items
