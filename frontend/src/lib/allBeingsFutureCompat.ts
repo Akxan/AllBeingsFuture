@@ -83,6 +83,7 @@ declare global {
       on: (channel: string, callback: (...args: any[]) => void) => () => void
       once: (channel: string, callback: (...args: any[]) => void) => void
       send: (channel: string, ...args: any[]) => void
+      getPathForFile?: (file: File) => string
     }
   }
 }
