@@ -437,6 +437,20 @@ export class ProcessService {
 
       case 'done': {
         state.streaming = false
+
+        // Send notification FIRST (before any operation that might throw)
+        // so bot push is never skipped by downstream exceptions
+        try {
+          const doneSession = this.sessionService.getById(sessionId)
+          if (!doneSession?.parentSessionId && this.notificationManager) {
+            const sessionName = doneSession?.name || sessionId
+            appLog('info', `Sending turn-complete notification for "${sessionName}" (${sessionId})`, 'process')
+            this.notificationManager.notify('taskComplete', sessionId, sessionName)
+          }
+        } catch (notifErr: any) {
+          appLog('error', `Failed to send turn-complete notification: ${notifErr?.message}`, 'process')
+        }
+
         // Finalize the last assistant message
         const lastMsg = state.messages[state.messages.length - 1]
         if (lastMsg?.role === 'assistant' && event.text) {
@@ -478,19 +492,19 @@ export class ProcessService {
         }
 
         // If this is a child session, inject result back to parent
-        const doneSession = this.sessionService.getById(sessionId)
-        if (doneSession?.parentSessionId) {
-          if (this.isPersistentChild(doneSession.parentSessionId, sessionId)) {
+        const doneSessionForChild = this.sessionService.getById(sessionId)
+        if (doneSessionForChild?.parentSessionId) {
+          if (this.isPersistentChild(doneSessionForChild.parentSessionId, sessionId)) {
             // Persistent child: resolve waiter, set status to 'idle', keep alive
             const lastAssistant = [...state.messages].reverse().find(m => m.role === 'assistant')
             const resultText = lastAssistant?.content || '(no output)'
             this.resolveChildTurnWaiter(sessionId, resultText)
-            this.updatePersistentAgentStatus(doneSession.parentSessionId, sessionId, 'idle')
+            this.updatePersistentAgentStatus(doneSessionForChild.parentSessionId, sessionId, 'idle')
             // Set idle flag (for waitAgentIdle race condition handling)
             this.agentIdleFlags.set(sessionId, true)
             this.resolveAgentIdleWaiters(sessionId)
           } else {
-            this.injectChildResult(doneSession.parentSessionId, sessionId)
+            this.injectChildResult(doneSessionForChild.parentSessionId, sessionId)
           }
         }
 
@@ -500,12 +514,6 @@ export class ProcessService {
 
         // Flush pending messages from the scheduler
         this.flushSchedulerPending(sessionId)
-
-        // Send notification for top-level sessions (not child agents)
-        if (!doneSession?.parentSessionId && this.notificationManager) {
-          const sessionName = doneSession?.name || sessionId
-          this.notificationManager.notify('taskComplete', sessionId, sessionName)
-        }
         break
       }
 
@@ -535,12 +543,17 @@ export class ProcessService {
         this.cleanupSupervisorPromptForSession(sessionId)
 
         // Send error notification for top-level sessions
-        if (this.notificationManager) {
-          const errSession = this.sessionService.getById(sessionId)
-          if (!errSession?.parentSessionId) {
-            const sessionName = errSession?.name || sessionId
-            this.notificationManager.notify('error', sessionId, sessionName, state.error)
+        try {
+          if (this.notificationManager) {
+            const errSession = this.sessionService.getById(sessionId)
+            if (!errSession?.parentSessionId) {
+              const sessionName = errSession?.name || sessionId
+              appLog('info', `Sending error notification for "${sessionName}" (${sessionId})`, 'process')
+              this.notificationManager.notify('error', sessionId, sessionName, state.error)
+            }
           }
+        } catch (notifErr: any) {
+          appLog('error', `Failed to send error notification: ${notifErr?.message}`, 'process')
         }
         break
       }

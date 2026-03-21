@@ -16,19 +16,29 @@ export class BotPushService {
    */
   async push(title: string, body: string): Promise<void> {
     const bots = this.botService.list()
+    console.log(`[BotPushService] push() called — ${bots.length} bot(s) registered`)
+    let pushed = 0
     for (const bot of bots) {
-      if (!bot.enabled) continue
+      if (!bot.enabled) {
+        console.log(`[BotPushService] Skipping "${bot.name}" (disabled)`)
+        continue
+      }
       try {
         const credentials: Record<string, string> = bot.credentials ?? {}
+        console.log(`[BotPushService] Pushing to "${bot.name}" (${bot.type}), has token: ${!!credentials.bot_token}, has chat_id: ${!!credentials.chat_id}`)
         switch (bot.type) {
           case 'telegram':
             await this.pushTelegram(credentials, title, body)
+            pushed++
             break
+          default:
+            console.log(`[BotPushService] Unknown bot type "${bot.type}", skipping`)
         }
       } catch (err: any) {
         console.error(`[BotPushService] Failed to push to bot "${bot.name}" (${bot.type}):`, err?.message ?? err)
       }
     }
+    console.log(`[BotPushService] push() done — ${pushed} bot(s) notified`)
   }
 
   /**

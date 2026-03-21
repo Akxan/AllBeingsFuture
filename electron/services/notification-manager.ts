@@ -145,19 +145,29 @@ export class NotificationManager extends EventEmitter {
     detail?: string,
   ): void {
     // Global check
-    if (!this.enabled) return
+    if (!this.enabled) {
+      console.log(`[NotificationManager] Skipped (globally disabled): ${type} for ${sessionName}`)
+      return
+    }
 
     // Per-type check
-    if (!this.typeEnabled[type]) return
+    if (!this.typeEnabled[type]) {
+      console.log(`[NotificationManager] Skipped (type "${type}" disabled): ${sessionName}`)
+      return
+    }
 
     // DND check
-    if (this.isDNDActive()) return
+    if (this.isDNDActive()) {
+      console.log(`[NotificationManager] Skipped (DND active): ${type} for ${sessionName}`)
+      return
+    }
 
     // Duplicate check (30-second cooldown)
     const dedupKey = `${sessionId}:${type}`
     const recent = this.recentNotifications.get(dedupKey)
     const now = Date.now()
     if (recent && now - recent.timestamp < NotificationManager.COOLDOWN_MS) {
+      console.log(`[NotificationManager] Skipped (dedup cooldown): ${type} for ${sessionName}`)
       return
     }
 
@@ -171,9 +181,15 @@ export class NotificationManager extends EventEmitter {
     this.sendSystemNotification(title, body, sessionId)
 
     // Forward to IM bots (Telegram, etc.)
-    this.botPushService?.push(title, body).catch((err: any) =>
-      console.error('[NotificationManager] Bot push failed:', err?.message ?? err),
-    )
+    const hasBotPush = !!this.botPushService
+    console.log(`[NotificationManager] Sending: ${type} "${title}" → system ✓, bot push ${hasBotPush ? 'attempting...' : 'N/A (no service)'}`)
+    if (hasBotPush) {
+      this.botPushService!.push(title, body)
+        .then(() => console.log(`[NotificationManager] Bot push succeeded: ${type} for ${sessionName}`))
+        .catch((err: any) =>
+          console.error('[NotificationManager] Bot push failed:', err?.message ?? err),
+        )
+    }
 
     // Emit event for other listeners (e.g. badge update)
     this.emit('notification-sent', { type, sessionId, sessionName, detail })
