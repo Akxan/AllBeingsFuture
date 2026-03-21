@@ -349,7 +349,12 @@ export default function ConversationView({ session }: Props) {
     if (!isNearBottomRef.current) return
 
     if (previousCount === 0 && messages.length > 0) {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+      // Session switch: defer scroll until DOM layout is complete,
+      // otherwise scrollIntoView fires before all messages are rendered.
+      requestAnimationFrame(() => {
+        const el = scrollContainerRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      })
     } else if (messages.length > previousCount) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
