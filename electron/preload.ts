@@ -10,6 +10,9 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
 
 // ---- IPC Bridge ----
 
@@ -81,9 +84,22 @@ function getFilePath(file: File): string {
 }
 
 // ---- Native File/Folder Drop Handler ----
-// In contextIsolation mode, the renderer's File objects lose the Electron-specific
-// `.path` property. We use webUtils.getPathForFile() (Electron 29+) to reliably
-// extract file paths and relay them via IPC → main → renderer ('files-dropped').
+// In contextIsolation mode, webUtils.getPathForFile() and File.path may both fail
+// to return the filesystem path. As a robust fallback (sandbox: false gives us
+// Node.js access), we read the file content via the web File API and save it to
+// a temp directory using Node.js fs, then relay the temp path via IPC.
+
+const DROP_TEMP_DIR = path.join(os.tmpdir(), 'abf-drops')
+
+function saveFileToTemp(file: File): Promise<string> {
+  return file.arrayBuffer().then((buf) => {
+    fs.mkdirSync(DROP_TEMP_DIR, { recursive: true })
+    const safeName = file.name.replace(/[<>:"|?*]/g, '_')
+    const tempPath = path.join(DROP_TEMP_DIR, `${Date.now()}-${safeName}`)
+    fs.writeFileSync(tempPath, Buffer.from(buf))
+    return tempPath
+  })
+}
 
 // Global dragover prevention — required for the browser to allow drop events.
 // Without this, the default behavior is to deny drops (and navigate to the file).
@@ -97,6 +113,7 @@ document.addEventListener('drop', (event) => {
   event.preventDefault()
 
   const paths: string[] = []
+  const pendingFiles: File[] = []
   const seen = new Set<string>()
 
   const addPath = (p: string | undefined | null) => {
@@ -106,27 +123,48 @@ document.addEventListener('drop', (event) => {
     }
   }
 
-  // 1. Try FileList (standard approach)
-  const files = event.dataTransfer?.files
-  if (files) {
-    for (let i = 0; i < files.length; i++) {
-      addPath(getFilePath(files[i]))
+  // Collect all File objects first
+  const allFiles: File[] = []
+  const fileList = event.dataTransfer?.files
+  if (fileList) {
+    for (let i = 0; i < fileList.length; i++) {
+      allFiles.push(fileList[i])
     }
   }
-
-  // 2. Fallback: items API — handles edge cases where FileList misses entries
-  //    (e.g., folders on some Windows/Electron versions)
-  if (event.dataTransfer?.items) {
+  // Fallback: items API — handles edge cases (e.g., folders on some Windows/Electron versions)
+  if (allFiles.length === 0 && event.dataTransfer?.items) {
     for (let i = 0; i < event.dataTransfer.items.length; i++) {
       const item = event.dataTransfer.items[i]
       if (item.kind !== 'file') continue
       const file = item.getAsFile()
-      if (file) addPath(getFilePath(file))
+      if (file) allFiles.push(file)
     }
   }
 
+  // Try to resolve paths; collect failures for async fallback
+  for (const file of allFiles) {
+    const p = getFilePath(file)
+    if (p) {
+      addPath(p)
+    } else {
+      pendingFiles.push(file)
+    }
+  }
+
+  // Send immediately resolved paths
   if (paths.length > 0) {
     ipcRenderer.send('native-files-dropped', paths)
+  }
+
+  // For files where path extraction failed: read content and save to temp dir
+  if (pendingFiles.length > 0) {
+    Promise.all(pendingFiles.map((f) => saveFileToTemp(f).catch(() => null)))
+      .then((tempPaths) => {
+        const valid = tempPaths.filter((p): p is string => !!p)
+        if (valid.length > 0) {
+          ipcRenderer.send('native-files-dropped', valid)
+        }
+      })
   }
 }, true)
 

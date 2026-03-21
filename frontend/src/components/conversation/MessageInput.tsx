@@ -277,36 +277,22 @@ function MessageInput({
     setDragging(false)
     dragCounterRef.current = 0
 
+    // File path extraction is handled by the preload capture-phase handler,
+    // which sends paths via IPC ('files-dropped'). The preload has direct
+    // access to webUtils.getPathForFile() and Node.js fs as fallback.
+    //
+    // Here we only handle image drops that need preview (e.g. browser image drops
+    // where the preload may not get a filesystem path).
     const droppedFiles = event.dataTransfer?.files
     if (droppedFiles) {
       for (let index = 0; index < droppedFiles.length; index += 1) {
         const file = droppedFiles[index]
-
-        // Try to resolve the native file path directly via the preload bridge.
-        // addFileByPath deduplicates by path, so no double-add if the IPC also fires.
-        let resolvedPath: string | undefined
-        try {
-          resolvedPath =
-            window.electronAPI.getPathForFile?.(file) ||
-            (file as any).path as string | undefined
-        } catch {
-          // contextBridge may fail to serialize File objects across worlds
-        }
-
-        if (resolvedPath) {
-          void addFileByPath(resolvedPath)
-          continue
-        }
-
-        // Non-native image drop (e.g. from browser): handle directly
         if (file.type.startsWith('image/')) {
           addImageFile(file)
         }
-        // For non-image files without a resolved path, the preload capture-phase
-        // handler sends paths via IPC ('files-dropped') as a fallback.
       }
     }
-  }, [addFileByPath, addImageFile])
+  }, [addImageFile])
 
   useIpcEvent<string[]>('files-dropped', useCallback((paths: string[]) => {
     if (!paths || paths.length === 0) return
