@@ -437,7 +437,7 @@ export default function ConversationView({ session }: Props) {
   const isNearBottomRef = useRef(true)
   const prevMsgCountRef = useRef(0)
   const lastEventTimeRef = useRef(0)
-  const sessionSwitchRef = useRef(false)
+  const forceScrollUntilRef = useRef(0)
 
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current
@@ -458,7 +458,7 @@ export default function ConversationView({ session }: Props) {
   useEffect(() => {
     prevMsgCountRef.current = 0
     isNearBottomRef.current = true
-    sessionSwitchRef.current = true
+    forceScrollUntilRef.current = Date.now() + 3000
   }, [session.id])
 
   // Initialize session on first mount / session switch.
@@ -492,17 +492,12 @@ export default function ConversationView({ session }: Props) {
   useEffect(() => {
     const previousCount = prevMsgCountRef.current
     prevMsgCountRef.current = messages.length
-    const isSessionSwitch = sessionSwitchRef.current
+    const forceScroll = Date.now() < forceScrollUntilRef.current
 
-    if (isSessionSwitch && messages.length > 0) {
-      // Only consume the flag once messages are actually loaded.
-      // Previously the flag was consumed even when messages were empty
-      // (before pollChat returns), so the subsequent load never
-      // triggered a scroll-to-bottom.
-      sessionSwitchRef.current = false
-      // Session switch: always scroll to the very bottom regardless of
-      // previous scroll position. Use double-rAF to ensure React has
-      // flushed all message DOM nodes before we measure scrollHeight.
+    if (forceScroll && messages.length > 0) {
+      // During the force-scroll window (3s) after session switch, every
+      // messages update scrolls to bottom. Double-rAF ensures React has
+      // flushed all DOM nodes before we measure scrollHeight.
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const el = scrollContainerRef.current
