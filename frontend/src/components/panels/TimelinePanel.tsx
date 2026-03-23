@@ -275,6 +275,14 @@ export default function TimelinePanel() {
     isNearBottom.current = el.scrollTop < 50 // near top = newest items
   }
 
+  // Reset scroll when switching sessions
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0
+    }
+    isNearBottom.current = true
+  }, [selectedId])
+
   // Auto-scroll on new events
   useEffect(() => {
     if (isNearBottom.current && scrollRef.current) {
