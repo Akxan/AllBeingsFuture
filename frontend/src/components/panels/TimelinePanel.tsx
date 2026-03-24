@@ -5,8 +5,9 @@
  * 以时间线形式呈现 AI 在后台执行的所有操作。
  */
 
-import { useMemo, useEffect, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { Clock, Zap, Search, Filter } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useSessionStore } from '../../stores/sessionStore'
 import { ACTIVITY_CONFIG, STATUS_COLORS } from '../../constants/statusColors'
 
@@ -123,6 +124,17 @@ function messagesToEvents(
     const msg = messages[i]
     const ts = msg.timestamp || new Date().toISOString()
 
+    if (msg.role === 'tool_use' && msg.toolName) {
+      const toolType = TOOL_TYPE_MAP[msg.toolName] || 'tool_use'
+      events.push({
+        id: `ev-${eventCounter++}`,
+        type: toolType,
+        detail: getToolDetail(msg.toolName, msg.toolInput),
+        timestamp: ts,
+      })
+      continue
+    }
+
     if (msg.role === 'user') {
       events.push({
         id: `ev-${eventCounter++}`,
@@ -155,18 +167,6 @@ function messagesToEvents(
             timestamp: ts,
           })
         }
-      }
-
-      // Also handle role === 'tool_use' (frontend-format messages from Wails bindings)
-      if (msg.role === 'tool_use' && msg.toolName) {
-        const toolType = TOOL_TYPE_MAP[msg.toolName] || 'tool_use'
-        events.push({
-          id: `ev-${eventCounter++}`,
-          type: toolType,
-          detail: getToolDetail(msg.toolName, msg.toolInput),
-          timestamp: ts,
-        })
-        continue
       }
 
       // Reply event (only for non-empty content)
@@ -211,17 +211,21 @@ function messagesToEvents(
 // ─── Component ──────────────────────────────────────────
 
 export default function TimelinePanel() {
-  const sessions = useSessionStore(s => s.sessions)
-  const selectedId = useSessionStore(s => s.selectedId)
-  const selectSession = useSessionStore(s => s.select)
-  const messages = useSessionStore(s => s.messages)
-  const streaming = useSessionStore(s => s.streaming)
+  const { sessions, selectedId, selectSession, messages, streaming } = useSessionStore(
+    useShallow((state) => ({
+      sessions: state.sessions,
+      selectedId: state.selectedId,
+      selectSession: state.select,
+      messages: state.messages,
+      streaming: state.streaming,
+    })),
+  )
   const [duration, setDuration] = useState('-')
   const [searchQuery, setSearchQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
-  const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const isNearBottom = useRef(true)
+  const deferredSearchQuery = useDeferredValue(searchQuery)
 
   // Auto-select first active session
   useEffect(() => {
@@ -232,7 +236,10 @@ export default function TimelinePanel() {
     if (activeSession) selectSession(activeSession.id)
   }, [sessions, selectedId, selectSession])
 
-  const selectedSession = sessions.find(s => s.id === selectedId)
+  const selectedSession = useMemo(
+    () => sessions.find((session) => session.id === selectedId),
+    [selectedId, sessions],
+  )
 
   // Duration timer
   useEffect(() => {
@@ -258,12 +265,12 @@ export default function TimelinePanel() {
     if (typeFilter !== 'all') {
       result = result.filter(e => matchesFilter(e, typeFilter))
     }
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase()
+    if (deferredSearchQuery.trim()) {
+      const q = deferredSearchQuery.toLowerCase()
       result = result.filter(e => e.detail.toLowerCase().includes(q) || e.type.includes(q))
     }
     return result
-  }, [events, typeFilter, searchQuery])
+  }, [deferredSearchQuery, events, typeFilter])
 
   // Reversed for display (newest first)
   const displayEvents = useMemo(() => [...filteredEvents].reverse(), [filteredEvents])
@@ -421,7 +428,6 @@ export default function TimelinePanel() {
             })}
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   )

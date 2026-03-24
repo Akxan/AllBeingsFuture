@@ -1,5 +1,6 @@
 import { Search, Sparkles, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
 
@@ -11,15 +12,24 @@ interface SearchResult {
 }
 
 export default function SearchPanel() {
-  const sessions = useSessionStore((state) => state.sessions)
-  const selectedId = useSessionStore((state) => state.selectedId)
-  const messages = useSessionStore((state) => state.messages)
-  const selectSession = useSessionStore((state) => state.select)
-  const setActiveView = useUIStore((state) => state.setActiveView)
-  const toggleSearchPanel = useUIStore((state) => state.toggleSearchPanel)
+  const { sessions, selectedId, messages, selectSession } = useSessionStore(
+    useShallow((state) => ({
+      sessions: state.sessions,
+      selectedId: state.selectedId,
+      messages: state.messages,
+      selectSession: state.select,
+    })),
+  )
+  const { setActiveView, toggleSearchPanel } = useUIStore(
+    useShallow((state) => ({
+      setActiveView: state.setActiveView,
+      toggleSearchPanel: state.toggleSearchPanel,
+    })),
+  )
 
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const deferredQuery = useDeferredValue(query)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -37,7 +47,7 @@ export default function SearchPanel() {
   }, [toggleSearchPanel])
 
   const results = useMemo(() => {
-    const trimmed = query.trim().toLowerCase()
+    const trimmed = deferredQuery.trim().toLowerCase()
     if (!trimmed) return []
 
     const sessionResults: SearchResult[] = sessions
@@ -70,7 +80,7 @@ export default function SearchPanel() {
       : []
 
     return [...sessionResults, ...messageResults]
-  }, [messages, query, selectedId, sessions])
+  }, [deferredQuery, messages, selectedId, sessions])
 
   const handleSelectResult = (resultId: string) => {
     const sessionId = resultId.includes('-message-') ? resultId.split('-message-')[0] : resultId
@@ -97,7 +107,7 @@ export default function SearchPanel() {
         </div>
 
         <div className="min-h-[240px] flex-1 overflow-y-auto px-3 py-3">
-          {!query.trim() && (
+          {!deferredQuery.trim() && (
             <div className="flex h-full min-h-[240px] flex-col items-center justify-center px-6 text-center text-slate-400">
               <Sparkles size={28} className="text-blue-200/70" />
               <p className="mt-4 text-sm">这块对齐 claudeops 的全局搜索浮层，当前先接入会话和消息搜索。</p>
@@ -105,7 +115,7 @@ export default function SearchPanel() {
             </div>
           )}
 
-          {query.trim() && results.length === 0 && (
+          {deferredQuery.trim() && results.length === 0 && (
             <div className="flex h-full min-h-[240px] flex-col items-center justify-center text-center text-slate-400">
               <p className="text-sm">没有找到匹配结果</p>
               <p className="mt-2 text-xs leading-6 text-slate-500">可以尝试目录名、Provider、状态或消息内容关键字。</p>

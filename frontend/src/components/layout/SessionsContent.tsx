@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { MessageSquarePlus, Search, FolderKanban, Plus, Sparkles } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useTeamStore } from '../../stores/teamStore'
 import { useUIStore } from '../../stores/uiStore'
@@ -23,28 +24,47 @@ function readInitialGroupMode(): SidebarGroupMode {
 }
 
 export default function SessionsContent() {
-  const sessions = useSessionStore((state) => state.sessions)
-  const selectedId = useSessionStore((state) => state.selectedId)
-  const selectSession = useSessionStore((state) => state.select)
-  const endSession = useSessionStore((state) => state.end)
-  const removeSession = useSessionStore((state) => state.remove)
-  const resumeSession = useSessionStore((state) => state.resumeSession)
-  const agents = useSessionStore((state) => state.agents)
-  const childToParent = useSessionStore((state) => state.childToParent)
-  const fetchAllAgents = useSessionStore((state) => state.fetchAllAgents)
+  const {
+    sessions,
+    selectedId,
+    selectSession,
+    endSession,
+    removeSession,
+    resumeSession,
+    agents,
+    childToParent,
+    fetchAllAgents,
+  } = useSessionStore(useShallow((state) => ({
+    sessions: state.sessions,
+    selectedId: state.selectedId,
+    selectSession: state.select,
+    endSession: state.end,
+    removeSession: state.remove,
+    resumeSession: state.resumeSession,
+    agents: state.agents,
+    childToParent: state.childToParent,
+    fetchAllAgents: state.fetchAllAgents,
+  })))
 
-  const teamInstances = useTeamStore((state) => state.instances)
-  const loadInstances = useTeamStore((state) => state.loadInstances)
+  const { teamInstances, loadInstances } = useTeamStore(useShallow((state) => ({
+    teamInstances: state.instances,
+    loadInstances: state.loadInstances,
+  })))
 
-  const setActiveView = useUIStore((state) => state.setActiveView)
-  const toggleSearchPanel = useUIStore((state) => state.toggleSearchPanel)
-  const setShowNewSessionDialog = useUIStore((state) => state.setShowNewSessionDialog)
+  const { setActiveView, toggleSearchPanel, setShowNewSessionDialog } = useUIStore(
+    useShallow((state) => ({
+      setActiveView: state.setActiveView,
+      toggleSearchPanel: state.toggleSearchPanel,
+      setShowNewSessionDialog: state.setShowNewSessionDialog,
+    })),
+  )
 
   const [groupMode, setGroupMode] = useState<SidebarGroupMode>(() => readInitialGroupMode())
   const [query, setQuery] = useState('')
   const [showTaskDialog, setShowTaskDialog] = useState(false)
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
   const [searchFocused, setSearchFocused] = useState(false)
+  const deferredQuery = useDeferredValue(query)
 
   useEffect(() => {
     void loadInstances()
@@ -61,20 +81,31 @@ export default function SessionsContent() {
     }
   }, [groupMode])
 
-  const filteredSessions = useMemo(
-    () => sessions.filter((session) => {
-      // Hide child sessions only if their parent exists in the session list
+  const { filteredSessions, activeSessions } = useMemo(() => {
+    const sessionIds = new Set(sessions.map((session) => session.id))
+    const nextFilteredSessions: typeof sessions = []
+    let activeSessions = 0
+
+    for (const session of sessions) {
+      if (ACTIVE_STATUSES.has(session.status)) {
+        activeSessions++
+      }
+
+      // Hide child sessions only if their parent exists in the session list.
       const parentId = childToParent[session.id]?.parentSessionId || (session as any).parentSessionId
-      if (parentId && sessions.some(s => s.id === parentId)) return false
-      return matchesSessionQuery(session, query)
-    }),
-    [query, sessions, childToParent],
-  )
+      if (parentId && sessionIds.has(parentId)) continue
+      if (!matchesSessionQuery(session, deferredQuery)) continue
+      nextFilteredSessions.push(session)
+    }
+
+    return {
+      filteredSessions: nextFilteredSessions,
+      activeSessions,
+    }
+  }, [childToParent, deferredQuery, sessions])
 
   const timeGroups = useMemo(() => groupSessionsByTime(filteredSessions), [filteredSessions])
   const directoryGroups = useMemo(() => groupSessionsByDirectory(filteredSessions), [filteredSessions])
-
-  const activeSessions = sessions.filter((session) => ACTIVE_STATUSES.has(session.status)).length
 
   const toggleGroup = (key: string) => {
     setCollapsedGroups((current) => ({
@@ -88,9 +119,12 @@ export default function SessionsContent() {
     setActiveView('sessions')
   }
 
-  const runningTeams = teamInstances.filter((i) => i.status === 'running').length
+  const runningTeams = useMemo(
+    () => teamInstances.reduce((count, instance) => count + (instance.status === 'running' ? 1 : 0), 0),
+    [teamInstances],
+  )
 
-  const emptyStateMessage = query.trim()
+  const emptyStateMessage = deferredQuery.trim()
     ? '没有匹配的会话'
     : '暂无会话，点击下方按钮创建'
 
