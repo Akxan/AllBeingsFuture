@@ -2,8 +2,9 @@
  * 统计面板 - 当前会话活动统计（占位版，无真实 activities 数据）
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Activity, AlertCircle, CheckCircle, Zap, Clock } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import { useSessionStore } from '../../stores/sessionStore'
 import { STATUS_COLORS } from '../../constants/statusColors'
 
@@ -30,11 +31,34 @@ function formatDuration(startedAt: string): string {
 }
 
 export default function StatsPanel() {
-  const sessions = useSessionStore(s => s.sessions)
-  const selectedId = useSessionStore(s => s.selectedId)
+  const { sessions, selectedId } = useSessionStore(useShallow((state) => ({
+    sessions: state.sessions,
+    selectedId: state.selectedId,
+  })))
   const [duration, setDuration] = useState('-')
 
-  const selectedSession = sessions.find(s => s.id === selectedId)
+  const { selectedSession, runningSessions, waitingSessions, errorSessions } = useMemo(() => {
+    let selectedSession: (typeof sessions)[number] | null = null
+    let runningSessions = 0
+    let waitingSessions = 0
+    let errorSessions = 0
+
+    for (const session of sessions) {
+      if (session.id === selectedId) {
+        selectedSession = session
+      }
+      if (session.status === 'running') runningSessions++
+      if (session.status === 'waiting_input') waitingSessions++
+      if (session.status === 'error') errorSessions++
+    }
+
+    return {
+      selectedSession,
+      runningSessions,
+      waitingSessions,
+      errorSessions,
+    }
+  }, [selectedId, sessions])
 
   useEffect(() => {
     if (!selectedSession?.startedAt) { setDuration('-'); return }
@@ -120,21 +144,15 @@ export default function StatsPanel() {
             <div className="text-[10px] text-text-muted">总会话</div>
           </div>
           <div>
-            <div className="text-lg font-bold text-accent-green">
-              {sessions.filter(s => s.status === 'running').length}
-            </div>
+            <div className="text-lg font-bold text-accent-green">{runningSessions}</div>
             <div className="text-[10px] text-text-muted">运行中</div>
           </div>
           <div>
-            <div className="text-lg font-bold text-accent-yellow">
-              {sessions.filter(s => s.status === 'waiting_input').length}
-            </div>
+            <div className="text-lg font-bold text-accent-yellow">{waitingSessions}</div>
             <div className="text-[10px] text-text-muted">等待输入</div>
           </div>
           <div>
-            <div className="text-lg font-bold text-accent-red">
-              {sessions.filter(s => s.status === 'error').length}
-            </div>
+            <div className="text-lg font-bold text-accent-red">{errorSessions}</div>
             <div className="text-[10px] text-text-muted">出错</div>
           </div>
         </div>

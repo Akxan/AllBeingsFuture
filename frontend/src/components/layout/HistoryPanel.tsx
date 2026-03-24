@@ -1,18 +1,24 @@
 import { Clock3, History, Search, X } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useSessionStore } from '../../stores/sessionStore'
 import { useUIStore } from '../../stores/uiStore'
 
 const HISTORY_STATUSES = new Set(['completed', 'terminated', 'error'])
 
 export default function HistoryPanel() {
-  const sessions = useSessionStore((state) => state.sessions)
-  const selectSession = useSessionStore((state) => state.select)
-  const setActiveView = useUIStore((state) => state.setActiveView)
-  const toggleHistoryPanel = useUIStore((state) => state.toggleHistoryPanel)
+  const { sessions, selectSession } = useSessionStore(useShallow((state) => ({
+    sessions: state.sessions,
+    selectSession: state.select,
+  })))
+  const { setActiveView, toggleHistoryPanel } = useUIStore(useShallow((state) => ({
+    setActiveView: state.setActiveView,
+    toggleHistoryPanel: state.toggleHistoryPanel,
+  })))
 
   const [query, setQuery] = useState('')
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const deferredQuery = useDeferredValue(query)
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -30,7 +36,7 @@ export default function HistoryPanel() {
   }, [toggleHistoryPanel])
 
   const historySessions = useMemo(() => {
-    const trimmed = query.trim().toLowerCase()
+    const trimmed = deferredQuery.trim().toLowerCase()
 
     return [...sessions]
       .filter((session) => HISTORY_STATUSES.has(session.status))
@@ -43,7 +49,7 @@ export default function HistoryPanel() {
           .includes(trimmed)
       })
       .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime())
-  }, [query, sessions])
+  }, [deferredQuery, sessions])
 
   const handleOpenSession = (sessionId: string) => {
     selectSession(sessionId)

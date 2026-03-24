@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { FolderOpen, GitBranch, GitMerge, FileText, FilePlus, FileEdit, FileX, ChevronDown, ChevronRight, RefreshCw, ArrowUpLeft } from 'lucide-react'
+import { useShallow } from 'zustand/react/shallow'
 import type { Session } from '../../../bindings/allbeingsfuture/internal/models/models'
 import { useGitStore } from '../../stores/gitStore'
 import { useTrackerStore } from '../../stores/trackerStore'
@@ -27,11 +28,16 @@ const modeLabel: Record<string, string> = {
 
 export default function SessionToolbar({ session }: Props) {
   const meta = statusMeta[session.status] || { color: 'bg-gray-500', label: session.status }
-  const childToParent = useSessionStore((s) => s.childToParent)
-  const sessions = useSessionStore((s) => s.sessions)
-  const selectSession = useSessionStore((s) => s.select)
+  const { childToParent, sessions, selectSession } = useSessionStore(useShallow((state) => ({
+    childToParent: state.childToParent,
+    sessions: state.sessions,
+    selectSession: state.select,
+  })))
   const parentBinding = childToParent[session.id]
-  const parentSession = parentBinding ? sessions.find((s) => s.id === parentBinding.parentSessionId) : undefined
+  const parentSession = useMemo(
+    () => (parentBinding ? sessions.find((item) => item.id === parentBinding.parentSessionId) : undefined),
+    [parentBinding, sessions],
+  )
 
   return (
     <header className="border-b border-white/[0.06] bg-white/[0.01] px-5 py-3.5">
@@ -88,13 +94,16 @@ export default function SessionToolbar({ session }: Props) {
 }
 
 function FileChangesPanel({ sessionId }: { sessionId: string }) {
-  const { sessionChanges, loadSessionChanges } = useTrackerStore()
+  const { sessionChanges, loadSessionChanges } = useTrackerStore(useShallow((state) => ({
+    sessionChanges: state.sessionChanges,
+    loadSessionChanges: state.loadSessionChanges,
+  })))
   const [expanded, setExpanded] = useState(false)
   const changes = sessionChanges[sessionId] || []
 
   useEffect(() => {
-    loadSessionChanges(sessionId)
-    const timer = setInterval(() => loadSessionChanges(sessionId), 5000)
+    void loadSessionChanges(sessionId)
+    const timer = setInterval(() => void loadSessionChanges(sessionId), 5000)
     return () => clearInterval(timer)
   }, [sessionId, loadSessionChanges])
 
@@ -134,7 +143,7 @@ function FileChangesPanel({ sessionId }: { sessionId: string }) {
         </span>
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); loadSessionChanges(sessionId) }}
+          onClick={(e) => { e.stopPropagation(); void loadSessionChanges(sessionId) }}
           className="ml-auto text-gray-500 hover:text-gray-300 transition-colors"
           title="刷新"
         >
@@ -164,7 +173,10 @@ function FileChangesPanel({ sessionId }: { sessionId: string }) {
 }
 
 function WorktreeActions({ session }: { session: Session }) {
-  const { checkMerge, mergeWorktree } = useGitStore()
+  const { checkMerge, mergeWorktree } = useGitStore(useShallow((state) => ({
+    checkMerge: state.checkMerge,
+    mergeWorktree: state.mergeWorktree,
+  })))
   const [mergeResult, setMergeResult] = useState<{ success: boolean; hasConflicts?: boolean } | null>(null)
   const [merging, setMerging] = useState(false)
 
