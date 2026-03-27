@@ -1,9 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Bot, ChevronDown, ChevronRight, Sparkles, Users } from 'lucide-react'
 import type { Session } from '../../../bindings/allbeingsfuture/internal/models/models'
 import type { ChatMessage } from '../../../bindings/allbeingsfuture/internal/models/models'
-import { useSessionStore, type ChatUpdateEvent, type AgentUpdateEvent } from '../../stores/sessionStore'
+import { useSessionStore, type ChatUpdateEvent, type ChatPatchEvent, type AgentUpdateEvent } from '../../stores/sessionStore'
 import { useIpcEvent } from '../../hooks/useIpcEvent'
 import MessageBubble from './MessageBubble'
 import MessageInput from './MessageInput'
@@ -424,6 +424,7 @@ export default function ConversationView({ session }: Props) {
   const pollChat = useSessionStore((state) => state.pollChat)
   const initProcess = useSessionStore((state) => state.initProcess)
   const handleChatUpdate = useSessionStore((state) => state.handleChatUpdate)
+  const handleChatPatch = useSessionStore((state) => state.handleChatPatch)
   const handleAgentUpdate = useSessionStore((state) => state.handleAgentUpdate)
   const stopProcess = useSessionStore((state) => state.stopProcess)
   const childToParent = useSessionStore((state) => state.childToParent)
@@ -449,6 +450,11 @@ export default function ConversationView({ session }: Props) {
   useIpcEvent<ChatUpdateEvent>('chat:update', (event) => {
     lastEventTimeRef.current = Date.now()
     handleChatUpdate(event)
+  })
+
+  useIpcEvent<ChatPatchEvent>('chat:patch', (event) => {
+    lastEventTimeRef.current = Date.now()
+    handleChatPatch(event)
   })
 
   useIpcEvent<AgentUpdateEvent>('agent:update', (event) => {
@@ -516,7 +522,11 @@ export default function ConversationView({ session }: Props) {
 
   const shellPanelVisible = useUIStore((state) => state.shellPanelVisible)
   const isEnded = ['completed', 'terminated', 'error'].includes(session.status)
-  const messageGroups = useMemo(() => groupMessages(messages, session.id), [messages, session.id])
+  const deferredMessages = useDeferredValue(messages)
+  const groupedMessagesSource = deferredMessages.length === 0 && messages.length <= 1
+    ? messages
+    : deferredMessages
+  const messageGroups = useMemo(() => groupMessages(groupedMessagesSource, session.id), [groupedMessagesSource, session.id])
   const handleSend = useCallback((text: string, images?: Array<{data: string; mimeType: string}>) => (
     sendMessage(session.id, text, images)
   ), [sendMessage, session.id])
@@ -551,7 +561,7 @@ export default function ConversationView({ session }: Props) {
           ) : (
             messageGroups.map((group) => {
               if (group.type === 'tool_group' && group.convMessages) {
-                const isLastGroup = group.index + group.messages.length >= messages.length
+                const isLastGroup = group.index + group.messages.length >= groupedMessagesSource.length
                 const fileOps = extractFileChanges(group.convMessages)
                 // Separate sticker tool_use messages from regular tool operations
                 const stickerMsgs = group.convMessages.filter(
@@ -583,7 +593,7 @@ export default function ConversationView({ session }: Props) {
               }
 
               if (group.type === 'child_agent' && group.childSessionId) {
-                const isLastGroup = group.index + group.messages.length >= messages.length
+                const isLastGroup = group.index + group.messages.length >= groupedMessagesSource.length
                 return (
                   <ChildAgentBlock
                     key={`child-${group.childSessionId}-${group.index}`}
