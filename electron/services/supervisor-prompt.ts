@@ -1,16 +1,15 @@
 /**
  * ABF 规则注入器
  *
- * 为 Claude Code 会话注入全套 ABF 规则文件：
- * - abf-supervisor.md  — Supervisor 调度指引（动态，含可用 Provider 列表）
- * - abf-architecture.md — 项目架构规则
- * - abf-providers.md    — Provider 适配规则
- * - abf-testing.md      — 测试规则
- * - abf-git-workflow.md — Git 与代码推送流程
+ * 按 Provider 差异化注入规则，避免双重 token 消耗：
+ * - Claude:  写 .claude/rules/abf-*.md（自动发现，不用 appendSystemPrompt）
+ * - Codex:   写 AGENTS.md（自动发现，不用 appendSystemPrompt）
+ * - 其他:    通过 appendSystemPrompt 注入
  *
- * 注入方式：写入 {workDir}/.claude/rules/abf-*.md
- * （Claude Code 官方规则发现路径，会话启动时自动加载）
- * 会话结束后自动清理，不影响用户自己的规则文件
+ * 共享规则（abf-common.md）：中文要求、Windows 环境、开发规范
+ * 所有 Provider 共享：providers 适配 + git-workflow
+ * Claude 额外：supervisor 调度指引
+ * Codex 额外：codex-agents.md 专有配置
  *
  * 模板文件位于 resources/prompts/ 目录下，打包后通过 extraResources 分发。
  */
@@ -22,6 +21,7 @@ import { appLog } from './log.js'
 
 /** Claude: ABF 注入的规则文件名（会话结束时统一清理） */
 const ABF_RULES_FILES = [
+  'abf-common.md',
   'abf-supervisor.md',
   'abf-providers.md',
   'abf-git-workflow.md',
@@ -114,10 +114,15 @@ export function buildAllRulesContent(
   includeSupervisor = true,
 ): string {
   const parts: string[] = []
+  // 共享基础规则（中文、Windows、开发规范）
+  try {
+    parts.push(loadTemplate('abf-common.md'))
+  } catch {
+    appLog('warn', '[Supervisor] Failed to load abf-common.md for system prompt', 'supervisor-prompt')
+  }
   if (includeSupervisor) {
     parts.push(buildSupervisorPrompt(availableProviders))
   }
-  // 只保留 providers 和 git-workflow（去掉 architecture 和 testing）
   parts.push(buildProviderRules())
   parts.push(buildGitWorkflowRules())
   return parts.join('\n\n---\n\n')
@@ -150,8 +155,9 @@ export function injectSupervisorPrompt(
   ensureRulesDir(workDir)
   const rulesDir = path.join(workDir, '.claude', 'rules')
 
-  // 构建规则文件内容（去掉 architecture 和 testing，减少 token 消耗）
+  // 构建规则文件内容（common + supervisor + providers + git）
   const rulesMap: Record<string, string> = {
+    'abf-common.md': loadTemplate('abf-common.md'),
     'abf-supervisor.md': buildSupervisorPrompt(availableProviders),
     'abf-providers.md': buildProviderRules(),
     'abf-git-workflow.md': buildGitWorkflowRules(),
@@ -180,23 +186,27 @@ export function injectCodexAgentsMd(
 ): void {
   const agentsPath = path.join(workDir, CODEX_AGENTS_FILE)
 
-  // 读取 Codex 专用模板
+  // 读取共享规则 + Codex 专用模板
+  let commonRules = ''
   let codexTemplate = ''
   try {
     const promptsDir = getPromptsDir()
+    commonRules = fs.readFileSync(path.join(promptsDir, 'abf-common.md'), 'utf-8')
     codexTemplate = fs.readFileSync(path.join(promptsDir, 'codex-agents.md'), 'utf-8')
   } catch {
-    appLog('warn', '[Supervisor] Failed to read codex-agents.md template', 'supervisor-prompt')
+    appLog('warn', '[Supervisor] Failed to read template files for Codex', 'supervisor-prompt')
     return
   }
 
-  // 拼接 ABF 规则（providers + git-workflow，不含 supervisor 调度指引）
-  const abfRules = [
+  // 拼接：共享规则 + Codex 专有 + providers + git-workflow
+  const parts = [
+    commonRules,
+    codexTemplate,
     buildProviderRules(),
     buildGitWorkflowRules(),
-  ].join('\n\n---\n\n')
+  ]
 
-  const content = `${codexTemplate}\n\n---\n\n${abfRules}`
+  const content = parts.join('\n\n---\n\n')
   fs.writeFileSync(agentsPath, content, 'utf-8')
   appLog('info', `[Supervisor] Injected AGENTS.md to: ${agentsPath}`, 'supervisor-prompt')
 }
