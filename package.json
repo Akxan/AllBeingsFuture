@@ -93,6 +93,10 @@
     ],
     "extraResources": [
       {
+        "from": "frontend/dist",
+        "to": "frontend/dist"
+      },
+      {
         "from": "mcps",
         "to": "mcps"
       },
