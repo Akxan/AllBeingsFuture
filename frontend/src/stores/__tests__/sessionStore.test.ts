@@ -16,6 +16,8 @@ const serviceMocks = vi.hoisted(() => ({
     GetRepoRoot: vi.fn(),
     CreateWorktree: vi.fn(),
     RemoveWorktree: vi.fn(),
+    MergeWorktree: vi.fn(),
+    ListWorktrees: vi.fn(),
   },
   processService: {
     GetChatState: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock('../../../bindings/allbeingsfuture/internal/services/processservice', ()
 }))
 
 import { useSessionStore } from '../sessionStore'
+import { useGitStore } from '../gitStore'
 
 function makeSession(overrides: Partial<Session> & { messagesJson?: string; parentSessionId?: string } = {}): Session {
   return {
@@ -85,11 +88,21 @@ function resetStore() {
   })
 }
 
+function resetGitStore() {
+  useGitStore.setState({
+    worktrees: [],
+    status: null,
+    currentRepo: '',
+    loading: false,
+  })
+}
+
 describe('sessionStore runtime status sync', () => {
   beforeEach(() => {
     vi.useRealTimers()
     vi.clearAllMocks()
     resetStore()
+    resetGitStore()
   })
 
   it('creates worktree-backed sessions when isolation is enabled', async () => {
@@ -495,5 +508,47 @@ describe('sessionStore runtime status sync', () => {
     expect(serviceMocks.sessionService.UpdateName).toHaveBeenNthCalledWith(2, 'session-1', '清理删除会话 worktree 并支持重命名')
     expect(smartName).toBe('清理删除会话 worktree 并支持重命名')
     expect(useSessionStore.getState().sessions[0]?.name).toBe('清理删除会话 worktree 并支持重命名')
+  })
+
+  it('reloads sessions after a successful worktree merge so merged state is reflected immediately', async () => {
+    const mergedSession = makeSession({
+      id: 'session-merged',
+      workingDirectory: 'C:/repo',
+      worktreePath: 'C:/repo/.allbeingsfuture-worktrees/session-merged',
+      worktreeBranch: 'worktree-session-merged',
+      worktreeMerged: true,
+      worktreeSourceRepo: 'C:/repo',
+    })
+
+    useSessionStore.setState({
+      sessions: [
+        makeSession({
+          id: 'session-merged',
+          workingDirectory: 'C:/repo/.allbeingsfuture-worktrees/session-merged',
+          worktreePath: 'C:/repo/.allbeingsfuture-worktrees/session-merged',
+          worktreeBranch: 'worktree-session-merged',
+          worktreeSourceRepo: 'C:/repo',
+        }),
+      ],
+    })
+
+    serviceMocks.gitService.MergeWorktree.mockResolvedValue({
+      success: true,
+      mergedBranch: 'worktree-session-merged',
+      targetBranch: 'main',
+      hasConflicts: false,
+      conflictFiles: [],
+      autoResolved: false,
+      message: 'merged and cleaned',
+    })
+    serviceMocks.gitService.ListWorktrees.mockResolvedValue([])
+    serviceMocks.sessionService.GetAll.mockResolvedValue([mergedSession])
+
+    const result = await useGitStore.getState().mergeWorktree('C:/repo', 'worktree-session-merged', 'main')
+
+    expect(serviceMocks.gitService.MergeWorktree).toHaveBeenCalledWith('C:/repo', 'worktree-session-merged', 'main')
+    expect(serviceMocks.sessionService.GetAll).toHaveBeenCalled()
+    expect(result?.success).toBe(true)
+    expect(useSessionStore.getState().sessions[0]).toEqual(mergedSession)
   })
 })

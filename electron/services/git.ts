@@ -34,6 +34,13 @@ function normalizeFilePath(target: string): string {
 }
 
 export class GitService {
+  private async getWorktreeBranch(repoPath: string, worktreePath: string): Promise<string> {
+    const normalizedWorktreePath = normalizeFilePath(worktreePath)
+    const worktree = (await this.listWorktrees(repoPath))
+      .find(item => normalizeFilePath(item.path) === normalizedWorktreePath)
+    return worktree?.branch || ''
+  }
+
   private async git(args: string[], cwd: string): Promise<string> {
     try {
       const { stdout } = await execFileAsync(getGitExecutable(), args, {
@@ -151,19 +158,30 @@ export class GitService {
     return { worktreePath, branch, baseCommit, baseBranch, taskId: taskId || '' }
   }
 
-  async removeWorktree(repoPath: string, worktreePath: string, deleteBranch: boolean = true): Promise<void> {
-    if (!worktreePath) return
+  async removeWorktree(repoPath: string, worktreePath: string, deleteBranch: boolean = true, branchName?: string): Promise<void> {
+    const normalizedWorktreePath = worktreePath ? normalizeFilePath(worktreePath) : ''
+    if (!normalizedWorktreePath) return
     const baseRepoPath = await this.getPrimaryRepoPath(repoPath).catch(() => normalizeFilePath(repoPath))
+    const branchToDelete = deleteBranch
+      ? (branchName || await this.getWorktreeBranch(baseRepoPath, normalizedWorktreePath).catch(() => '') || `worktree-${path.basename(normalizedWorktreePath)}`)
+      : ''
 
-    await this.git(['worktree', 'remove', worktreePath, '--force'], baseRepoPath).catch(async () => {
-      await rm(worktreePath, { recursive: true, force: true }).catch(() => {})
-      await this.git(['worktree', 'prune'], baseRepoPath)
-    })
+    try {
+      await this.git(['worktree', 'remove', normalizedWorktreePath, '--force'], baseRepoPath)
+    } catch (removeErr: any) {
+      try {
+        await rm(normalizedWorktreePath, { recursive: true, force: true })
+      } catch (fsErr: any) {
+        const removeMessage = removeErr?.stderr || removeErr?.message || String(removeErr)
+        const fsMessage = fsErr?.message || String(fsErr)
+        throw new Error(`删除 Worktree 失败: ${removeMessage}; 回退删除目录也失败: ${fsMessage}`)
+      }
+    }
 
-    if (deleteBranch) {
-      const worktreeName = path.basename(worktreePath)
-      const branchName = `worktree-${worktreeName}`
-      await this.git(['branch', '-D', branchName], baseRepoPath).catch(() => {})
+    await this.git(['worktree', 'prune'], baseRepoPath).catch(() => {})
+
+    if (deleteBranch && branchToDelete) {
+      await this.git(['branch', '-D', branchToDelete], baseRepoPath).catch(() => {})
     }
   }
 
@@ -197,7 +215,7 @@ export class GitService {
     return worktrees
       .filter(worktree => !worktree.prunable)
       .map((worktree) => ({
-      path: worktree.path,
+      path: normalizeFilePath(worktree.path),
       branch: worktree.branch || '',
       headCommit: worktree.headCommit || '',
       isMain: normalizeFilePath(worktree.path) === repoRoot,
@@ -237,13 +255,28 @@ export class GitService {
 
   async mergeWorktree(repoPath: string, worktreeBranch: string, targetBranch: string): Promise<any> {
     const baseRepoPath = await this.getPrimaryRepoPath(repoPath)
+    const worktree = (await this.listWorktrees(baseRepoPath).catch(() => []))
+      .find(item => item.branch === worktreeBranch && !item.isMain)
     const currentBranch = await this.getCurrentBranch(baseRepoPath)
     if (currentBranch !== targetBranch) {
       await this.git(['checkout', targetBranch], baseRepoPath)
     }
 
     try {
-      const result = await this.git(['merge', worktreeBranch, '--no-ff'], baseRepoPath)
+      const mergeOutput = await this.git(['merge', worktreeBranch, '--no-ff'], baseRepoPath)
+      const notes: string[] = []
+
+      if (worktree?.path) {
+        try {
+          await this.removeWorktree(baseRepoPath, worktree.path, true, worktreeBranch)
+          notes.push(`已自动清理 ${worktree.path}`)
+        } catch (cleanupErr: any) {
+          notes.push(`自动清理 Worktree 失败: ${cleanupErr?.message || String(cleanupErr)}`)
+        }
+      } else {
+        notes.push('未找到对应 Worktree，跳过自动清理')
+      }
+
       return {
         success: true,
         mergedBranch: worktreeBranch,
@@ -251,7 +284,7 @@ export class GitService {
         hasConflicts: false,
         conflictFiles: [],
         autoResolved: false,
-        message: result || `已将 ${worktreeBranch} 合并到 ${targetBranch}`,
+        message: [mergeOutput || `已将 ${worktreeBranch} 合并到 ${targetBranch}`, ...notes].filter(Boolean).join('；'),
       }
     } catch (err: any) {
       const conflictOutput = await this.git(['diff', '--name-only', '--diff-filter=U'], baseRepoPath).catch(() => '')

@@ -48,6 +48,18 @@ import { QQBotService } from '../services/qqbot.js'
 import { QQOfficialService } from '../services/qqofficial.js'
 import { WorkspaceService } from '../services/workspace.js'
 
+function normalizeManagedPath(target: string): string {
+  if (!target) return ''
+  return path.resolve(target).replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function isManagedWorktreePath(repoPath: string, worktreePath: string): boolean {
+  const repoRoot = normalizeManagedPath(repoPath)
+  const candidate = normalizeManagedPath(worktreePath)
+  return candidate.startsWith(`${repoRoot}/.allbeingsfuture-worktrees/`)
+    || candidate.startsWith(`${repoRoot}/.abf-worktrees/`)
+}
+
 export function registerAllIpcHandlers(
   db: Database,
   bridgeManager: BridgeManager,
@@ -94,6 +106,62 @@ export function registerAllIpcHandlers(
   // Seed builtin MCP servers and skills on startup (idempotent)
   try { mcpService.seedBuiltins() } catch {}
   try { skillService.seedBuiltins() } catch {}
+
+  const cleanupManagedWorktreesOnStartup = async () => {
+    const sessions = sessionService.getAll()
+    const keepPathsByRepo = new Map<string, Set<string>>()
+    const knownRepos = new Set<string>()
+
+    for (const session of sessions) {
+      const repoPath = normalizeManagedPath(session.worktreeSourceRepo || '')
+      if (!repoPath) continue
+
+      knownRepos.add(repoPath)
+      if (!keepPathsByRepo.has(repoPath)) keepPathsByRepo.set(repoPath, new Set())
+
+      if (session.worktreePath && !session.worktreeMerged) {
+        keepPathsByRepo.get(repoPath)!.add(normalizeManagedPath(session.worktreePath))
+      }
+    }
+
+    try {
+      const workspaces = await workspaceService.list()
+      for (const workspace of workspaces) {
+        for (const repo of workspace.repos || []) {
+          const repoPath = normalizeManagedPath(repo?.repoPath || '')
+          if (repoPath) knownRepos.add(repoPath)
+        }
+      }
+    } catch {}
+
+    for (const repoPath of knownRepos) {
+      const keepPaths = keepPathsByRepo.get(repoPath) || new Set<string>()
+      let worktrees: any[] = []
+
+      try {
+        worktrees = await gitService.listWorktrees(repoPath)
+      } catch {
+        continue
+      }
+
+      for (const worktree of worktrees) {
+        const worktreePath = normalizeManagedPath(worktree?.path || '')
+        if (!worktreePath || worktree?.isMain || !isManagedWorktreePath(repoPath, worktreePath) || keepPaths.has(worktreePath)) {
+          continue
+        }
+
+        try {
+          await gitService.removeWorktree(repoPath, worktreePath, true, worktree?.branch || '')
+        } catch (err) {
+          console.warn('[startup-worktree-cleanup] failed to remove worktree', { repoPath, worktreePath, err })
+        }
+      }
+    }
+  }
+
+  void cleanupManagedWorktreesOnStartup().catch(err => {
+    console.warn('[startup-worktree-cleanup] failed', err)
+  })
 
   // ==============================================================
   // SessionService
@@ -172,7 +240,14 @@ export function registerAllIpcHandlers(
   ipcMain.handle('GitService.RemoveWorktree', (_e, repoPath: string, worktreePath: string, deleteBranch: boolean) => gitService.removeWorktree(repoPath, worktreePath, deleteBranch))
   ipcMain.handle('GitService.ListWorktrees', (_e, repoPath: string) => gitService.listWorktrees(repoPath))
   ipcMain.handle('GitService.CheckMerge', (_e, repoPath: string, worktreeBranch: string, targetBranch: string) => gitService.checkMerge(repoPath, worktreeBranch, targetBranch))
-  ipcMain.handle('GitService.MergeWorktree', (_e, repoPath: string, worktreeBranch: string, targetBranch: string) => gitService.mergeWorktree(repoPath, worktreeBranch, targetBranch))
+  ipcMain.handle('GitService.MergeWorktree', async (_e, repoPath: string, worktreeBranch: string, targetBranch: string) => {
+    const result = await gitService.mergeWorktree(repoPath, worktreeBranch, targetBranch)
+    if (result?.success) {
+      const sourceRepo = await gitService.getRepoRoot(repoPath).catch(() => normalizeManagedPath(repoPath))
+      sessionService.markWorktreeMergedByRepoAndBranch(sourceRepo, worktreeBranch)
+    }
+    return result
+  })
 
   // ==============================================================
   // PTYService

@@ -158,6 +158,26 @@ export class SessionService {
   }
 
   markWorktreeMerged(id: string): void {
-    this.db.raw.prepare('UPDATE sessions SET worktree_merged = 1 WHERE id = ?').run(id)
+    this.db.raw.prepare(`
+      UPDATE sessions
+      SET worktree_merged = 1,
+          working_directory = CASE
+            WHEN worktree_source_repo IS NOT NULL AND worktree_source_repo != '' THEN worktree_source_repo
+            ELSE working_directory
+          END
+      WHERE id = ?
+    `).run(id)
+  }
+
+  markWorktreeMergedByRepoAndBranch(sourceRepo: string, branch: string): void {
+    this.db.raw.prepare(`
+      UPDATE sessions
+      SET worktree_merged = 1,
+          working_directory = CASE
+            WHEN worktree_source_repo IS NOT NULL AND worktree_source_repo != '' THEN worktree_source_repo
+            ELSE working_directory
+          END
+      WHERE worktree_source_repo = ? AND worktree_branch = ?
+    `).run(sourceRepo, branch)
   }
 }
