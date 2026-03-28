@@ -70,6 +70,10 @@ function getPreloadPath() {
 }
 
 function getRendererPath() {
+  if (!isDev) {
+    return path.join(process.resourcesPath, 'frontend', 'dist', 'index.html')
+  }
+
   return path.join(__dirname, '..', '..', 'frontend', 'dist', 'index.html')
 }
 
@@ -115,6 +119,18 @@ async function createWindow() {
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[main] Renderer failed to load:', { errorCode, errorDescription, validatedURL })
+  })
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.log('[renderer]', { level, message, line, sourceId })
+  })
+  mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error('[main] Preload failed:', { preloadPath, error })
+  })
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[main] Renderer process gone:', details)
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    console.log('[main] Renderer loaded:', mainWindow?.webContents.getURL())
   })
 
   void loadRenderer(mainWindow).catch((error) => {
