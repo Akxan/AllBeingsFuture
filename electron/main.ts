@@ -1,17 +1,19 @@
 /**
  * AllBeingsFuture - Electron Main Process
  *
- * Electron Main Process. Manages:
+ * Main responsibilities:
  * - BrowserWindow lifecycle
- * - SQLite database (better-sqlite3)
- * - AI Provider Bridge (directly integrated, no subprocess)
- * - IPC handlers for all services
- * - System tray, single instance, PTY
+ * - SQLite database
+ * - Provider bridge
+ * - IPC handler registration
+ * - Tray and notifications
  */
 
-import { app, BrowserWindow, ipcMain, dialog, clipboard, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, clipboard, shell, protocol, net } from 'electron'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Database } from './services/database.js'
 import { registerAllIpcHandlers } from './ipc/handlers.js'
 import { BridgeManager } from './bridge/bridge.js'
@@ -21,33 +23,127 @@ import { NotificationManager } from './services/notification-manager.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const STARTUP_LOG_DIR = path.join(os.homedir(), '.allbeingsfuture')
+const STARTUP_LOG_PATH = path.join(STARTUP_LOG_DIR, 'startup.log')
+const APP_SCHEME = 'app'
+const isDev = !app.isPackaged
 
-// ---- Global Error Handlers ----
-// Prevent "write EOF" and similar async stream errors from crashing the entire app.
-// These errors typically occur when a child process (Claude SDK, Codex, MCP server)
-// exits while its stdin pipe is still being written to.
-process.on('uncaughtException', (err) => {
-  const msg = err?.message || String(err)
-  // Stream write errors (write EOF, write EPIPE) are non-fatal — the session
-  // that owned the dead process will receive an error/exit event separately.
-  if (/write (EOF|EPIPE)|ECONNRESET|EPIPE|channel closed/i.test(msg)) {
-    console.error('[main] Non-fatal stream error (suppressed):', msg)
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+    },
+  },
+])
+
+function logStartup(label: string, payload?: unknown) {
+  const serialized = typeof payload === 'string' ? payload : JSON.stringify(payload ?? null)
+  const line = `[${new Date().toISOString()}] [${label}] ${serialized}\n`
+  try {
+    fs.mkdirSync(STARTUP_LOG_DIR, { recursive: true })
+    fs.appendFileSync(STARTUP_LOG_PATH, line)
+  } catch {
+    // Ignore file logging failures.
+  }
+}
+
+function serializeError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    }
+  }
+  return String(error)
+}
+
+function getRendererRoot() {
+  if (isDev) {
+    return path.join(__dirname, '..', '..', 'frontend', 'dist')
+  }
+
+  return path.join(process.resourcesPath, 'frontend', 'dist')
+}
+
+function getRendererPath() {
+  return path.join(getRendererRoot(), 'index.html')
+}
+
+function getPreloadPath() {
+  if (isDev) {
+    return path.join(__dirname, 'preload.js')
+  }
+  return path.join(__dirname, '..', 'preload.cjs')
+}
+
+function getIconPath() {
+  if (isDev) {
+    return path.join(__dirname, '..', '..', 'appicon.ico')
+  }
+  return path.join(process.resourcesPath, 'appicon.ico')
+}
+
+function resolveAppAssetPath(requestUrl: string) {
+  const root = path.normalize(getRendererRoot())
+  const { pathname } = new URL(requestUrl)
+  const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
+  const resolvedPath = path.normalize(path.join(root, relativePath))
+
+  if (!resolvedPath.startsWith(root)) {
+    throw new Error(`Blocked app protocol traversal: ${requestUrl}`)
+  }
+
+  return resolvedPath
+}
+
+async function registerAppProtocol() {
+  if (isDev) return
+
+  await protocol.handle(APP_SCHEME, async (request) => {
+    try {
+      const filePath = resolveAppAssetPath(request.url)
+      logStartup('protocol-request', {
+        url: request.url,
+        filePath,
+        exists: fs.existsSync(filePath),
+      })
+      return net.fetch(pathToFileURL(filePath).toString())
+    } catch (error) {
+      logStartup('protocol-error', serializeError(error))
+      return new Response('Not Found', { status: 404 })
+    }
+  })
+}
+
+process.on('uncaughtException', (error) => {
+  const message = error?.message || String(error)
+  if (/write (EOF|EPIPE)|ECONNRESET|EPIPE|channel closed/i.test(message)) {
+    console.error('[main] Non-fatal stream error (suppressed):', message)
+    logStartup('uncaught-exception-suppressed', message)
     return
   }
-  // For truly unexpected errors, log but don't crash — let Electron handle it
-  console.error('[main] Uncaught exception:', err)
+
+  console.error('[main] Uncaught exception:', error)
+  logStartup('uncaught-exception', serializeError(error))
 })
 
 process.on('unhandledRejection', (reason) => {
-  const msg = reason instanceof Error ? reason.message : String(reason)
-  if (/write (EOF|EPIPE)|ECONNRESET|EPIPE|channel closed/i.test(msg)) {
-    console.error('[main] Non-fatal unhandled rejection (suppressed):', msg)
+  const message = reason instanceof Error ? reason.message : String(reason)
+  if (/write (EOF|EPIPE)|ECONNRESET|EPIPE|channel closed/i.test(message)) {
+    console.error('[main] Non-fatal unhandled rejection (suppressed):', message)
+    logStartup('unhandled-rejection-suppressed', message)
     return
   }
+
   console.error('[main] Unhandled rejection:', reason)
+  logStartup('unhandled-rejection', serializeError(reason))
 })
 
-// ---- Single Instance Lock ----
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
   app.quit()
@@ -60,21 +156,34 @@ let db: Database | null = null
 let bridgeManager: BridgeManager | null = null
 let processService: ProcessService | null = null
 
-const isDev = !app.isPackaged
-
-function getPreloadPath() {
-  if (isDev) {
-    return path.join(__dirname, 'preload.js')
+async function snapshotRenderer(window: BrowserWindow, phase: string) {
+  try {
+    const snapshot = await window.webContents.executeJavaScript(`
+      (() => ({
+        href: window.location.href,
+        readyState: document.readyState,
+        title: document.title,
+        bodyClass: document.body?.className ?? '',
+        rootExists: !!document.getElementById('root'),
+        rootChildCount: document.getElementById('root')?.childElementCount ?? -1,
+        rootHtmlLength: document.getElementById('root')?.innerHTML.length ?? -1,
+        styleSheetCount: document.styleSheets.length,
+        styleSheets: Array.from(document.styleSheets).map((sheet) => {
+          try {
+            return { href: sheet.href, rules: sheet.cssRules?.length ?? 0 }
+          } catch (error) {
+            return { href: sheet.href, error: String(error) }
+          }
+        }),
+        scripts: Array.from(document.scripts).map((script) => ({ src: script.src, type: script.type })),
+        electronApiKeys: Object.keys(window.electronAPI ?? {}),
+        compatKeys: Object.keys(window.allBeingsFuture ?? {}),
+      }))()
+    `, true)
+    logStartup(`renderer-snapshot:${phase}`, snapshot)
+  } catch (error) {
+    logStartup(`renderer-snapshot-error:${phase}`, serializeError(error))
   }
-  return path.join(__dirname, '..', 'preload.cjs')
-}
-
-function getRendererPath() {
-  if (!isDev) {
-    return path.join(process.resourcesPath, 'frontend', 'dist', 'index.html')
-  }
-
-  return path.join(__dirname, '..', '..', 'frontend', 'dist', 'index.html')
 }
 
 async function loadRenderer(window: BrowserWindow) {
@@ -83,18 +192,19 @@ async function loadRenderer(window: BrowserWindow) {
     return
   }
 
-  await window.loadFile(getRendererPath())
-}
-
-function getIconPath() {
-  const isDev = !app.isPackaged
-  if (isDev) {
-    return path.join(__dirname, '..', '..', 'appicon.ico')
-  }
-  return path.join(process.resourcesPath, 'appicon.ico')
+  await window.loadURL(`${APP_SCHEME}://frontend/index.html`)
 }
 
 async function createWindow() {
+  logStartup('create-window', {
+    preloadPath: getPreloadPath(),
+    preloadExists: fs.existsSync(getPreloadPath()),
+    rendererPath: getRendererPath(),
+    rendererExists: fs.existsSync(getRendererPath()),
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+  })
+
   mainWindow = new BrowserWindow({
     width: 1900,
     height: 1200,
@@ -117,29 +227,60 @@ async function createWindow() {
     },
   })
 
+  const requestFilter = { urls: [`${APP_SCHEME}://*/*`, 'file://*/*'] }
+  mainWindow.webContents.session.webRequest.onCompleted(requestFilter, (details) => {
+    if (details.webContentsId === mainWindow?.webContents.id) {
+      logStartup('request-completed', {
+        url: details.url,
+        method: details.method,
+        statusCode: details.statusCode,
+        fromCache: details.fromCache,
+      })
+    }
+  })
+  mainWindow.webContents.session.webRequest.onErrorOccurred(requestFilter, (details) => {
+    if (details.webContentsId === mainWindow?.webContents.id) {
+      logStartup('request-error', {
+        url: details.url,
+        method: details.method,
+        error: details.error,
+      })
+    }
+  })
+
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     console.error('[main] Renderer failed to load:', { errorCode, errorDescription, validatedURL })
+    logStartup('did-fail-load', { errorCode, errorDescription, validatedURL })
   })
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     console.log('[renderer]', { level, message, line, sourceId })
+    logStartup('console-message', { level, message, line, sourceId })
   })
   mainWindow.webContents.on('preload-error', (_event, preloadPath, error) => {
     console.error('[main] Preload failed:', { preloadPath, error })
+    logStartup('preload-error', { preloadPath, error: serializeError(error) })
   })
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     console.error('[main] Renderer process gone:', details)
+    logStartup('render-process-gone', details)
   })
   mainWindow.webContents.on('did-finish-load', () => {
-    console.log('[main] Renderer loaded:', mainWindow?.webContents.getURL())
+    const currentUrl = mainWindow?.webContents.getURL() ?? ''
+    console.log('[main] Renderer loaded:', currentUrl)
+    logStartup('did-finish-load', currentUrl)
+    void snapshotRenderer(mainWindow!, 'did-finish-load')
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        void snapshotRenderer(mainWindow, 'after-1500ms')
+      }
+    }, 1500)
   })
 
   void loadRenderer(mainWindow).catch((error) => {
     console.error('[main] Failed to initialize renderer:', error)
+    logStartup('load-renderer-error', serializeError(error))
   })
 
-  // Safety net: intercept file:// navigations caused by unhandled file drops.
-  // If a drop event's preventDefault() somehow fails, the browser will try to
-  // navigate to the dropped file. Catch that here and relay as files-dropped.
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (url.startsWith('file://')) {
       event.preventDefault()
@@ -148,7 +289,9 @@ async function createWindow() {
         if (filePath) {
           mainWindow?.webContents.send('files-dropped', [filePath])
         }
-      } catch { /* ignore malformed URLs */ }
+      } catch {
+        // Ignore malformed URLs.
+      }
     }
   })
 
@@ -156,10 +299,9 @@ async function createWindow() {
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   }
 
-  mainWindow.on('close', (e) => {
-    // Minimize to tray instead of closing
+  mainWindow.on('close', (event) => {
     if (trayManager) {
-      e.preventDefault()
+      event.preventDefault()
       mainWindow?.hide()
     }
   })
@@ -170,12 +312,9 @@ async function createWindow() {
 }
 
 function createTray() {
-  // Initialize TrayManager (full-featured tray with badge, session count, etc.)
   trayManager = new TrayManager()
   trayManager.init(mainWindow!)
 }
-
-// ---- App Lifecycle ----
 
 app.on('second-instance', () => {
   if (mainWindow) {
@@ -186,54 +325,47 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
-  // Initialize database
-  db = new Database()
+  logStartup('app-ready', {
+    appPath: app.getAppPath(),
+    userData: app.getPath('userData'),
+    resourcesPath: process.resourcesPath,
+  })
 
-  // Initialize bridge manager
+  await registerAppProtocol()
+
+  db = new Database()
   bridgeManager = new BridgeManager()
 
-  // Register all IPC handlers
   const services = registerAllIpcHandlers(db, bridgeManager, () => mainWindow)
   const botPushService = services.botPushService
   processService = services.processService
 
-  // Register app-level IPC handlers
   registerAppIpcHandlers()
 
-  // Initialize notification manager and wire bot push
   notificationManager = new NotificationManager(() => mainWindow)
   notificationManager.setBotPushService(botPushService)
   processService!.setNotificationManager(notificationManager)
 
-  // Create window and tray
   await createWindow()
   createTray()
 })
 
 app.on('window-all-closed', () => {
-  // On Windows, keep app running in tray
   if (process.platform !== 'darwin' && !trayManager) {
     app.quit()
   }
 })
 
 app.on('before-quit', () => {
-  // Destroy tray icon
   trayManager?.destroy()
   trayManager = null
 
-  // Clean up parser / state inference timers
   processService?.cleanup()
   processService = null
 
-  // Clean up bridge sessions
   bridgeManager?.destroyAll()
-
-  // Close database
   db?.close()
 })
-
-// ---- App-level IPC Handlers ----
 
 function registerAppIpcHandlers() {
   ipcMain.handle('app:quit', () => {
@@ -246,7 +378,7 @@ function registerAppIpcHandlers() {
     if (!mainWindow) return ''
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
-      title: '选择目录',
+      title: 'Select Directory',
     })
     return result.filePaths[0] || ''
   })
@@ -255,20 +387,20 @@ function registerAppIpcHandlers() {
     if (!mainWindow) return []
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      title: '选择文件',
+      title: 'Select Files',
     })
     return result.filePaths
   })
 
-  ipcMain.handle('app:openInExplorer', async (_e, targetPath: string) => {
+  ipcMain.handle('app:openInExplorer', async (_event, targetPath: string) => {
     if (targetPath) shell.showItemInFolder(targetPath)
   })
 
-  ipcMain.handle('app:openInTerminal', async (_e, targetPath: string) => {
+  ipcMain.handle('app:openInTerminal', async (_event, targetPath: string) => {
     if (targetPath) shell.openPath(targetPath)
   })
 
-  ipcMain.handle('clipboard:writeText', async (_e, text: string) => {
+  ipcMain.handle('clipboard:writeText', async (_event, text: string) => {
     clipboard.writeText(text)
   })
 
@@ -276,42 +408,36 @@ function registerAppIpcHandlers() {
     return clipboard.readText()
   })
 
-  // Tray manager: session status updates
-  ipcMain.handle('tray:updateSessionCount', (_e, count: number) => {
+  ipcMain.handle('tray:updateSessionCount', (_event, count: number) => {
     trayManager?.onSessionStatusChange(count)
   })
 
-  // Notification manager IPC
-  ipcMain.handle('notificationManager:notify', (_e, type: string, sessionId: string, sessionName: string, detail?: string) => {
-    notificationManager?.notify(type as any, sessionId, sessionName, detail)
+  ipcMain.handle('notificationManager:notify', (_event, type: string, sessionId: string, sessionName: string, detail?: string) => {
+    notificationManager?.notify(type as never, sessionId, sessionName, detail)
   })
-  ipcMain.handle('notificationManager:setDND', (_e, enabled: boolean, startTime?: string, endTime?: string) => {
+  ipcMain.handle('notificationManager:setDND', (_event, enabled: boolean, startTime?: string, endTime?: string) => {
     notificationManager?.setDND(enabled, startTime, endTime)
   })
-  ipcMain.handle('notificationManager:setTypeEnabled', (_e, type: string, enabled: boolean) => {
-    notificationManager?.setTypeEnabled(type as any, enabled)
+  ipcMain.handle('notificationManager:setTypeEnabled', (_event, type: string, enabled: boolean) => {
+    notificationManager?.setTypeEnabled(type as never, enabled)
   })
-  ipcMain.handle('notificationManager:setSoundEnabled', (_e, enabled: boolean) => {
+  ipcMain.handle('notificationManager:setSoundEnabled', (_event, enabled: boolean) => {
     notificationManager?.setSoundEnabled(enabled)
   })
-  ipcMain.handle('notificationManager:setEnabled', (_e, enabled: boolean) => {
+  ipcMain.handle('notificationManager:setEnabled', (_event, enabled: boolean) => {
     notificationManager?.setEnabled(enabled)
   })
   ipcMain.handle('notificationManager:getConfig', () => {
     return notificationManager?.getConfig() ?? null
   })
-  ipcMain.handle('notificationManager:acknowledge', (_e, sessionId: string, type?: string) => {
-    notificationManager?.acknowledge(sessionId, type as any)
+  ipcMain.handle('notificationManager:acknowledge', (_event, sessionId: string, type?: string) => {
+    notificationManager?.acknowledge(sessionId, type as never)
   })
 
-  // Relay native file/folder drop paths from preload → renderer
-  // The preload captures File.path (reliable in its privileged context)
-  // and forwards here; we echo back as 'files-dropped' for the renderer to consume.
   ipcMain.on('native-files-dropped', (event, paths: string[]) => {
     event.sender.send('files-dropped', paths)
   })
 
-  // Window controls (for custom title bar)
   ipcMain.handle('window:minimize', () => mainWindow?.minimize())
   ipcMain.handle('window:maximize', () => {
     if (mainWindow?.isMaximized()) {
