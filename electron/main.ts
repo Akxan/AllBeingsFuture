@@ -28,6 +28,8 @@ const STARTUP_LOG_PATH = path.join(STARTUP_LOG_DIR, 'startup.log')
 const APP_SCHEME = 'app'
 const isDev = !app.isPackaged
 
+app.disableHardwareAcceleration()
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: APP_SCHEME,
