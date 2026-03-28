@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { GitService } from '../../bindings/allbeingsfuture/internal/services'
 import type { WorktreeInfo, GitStatus, MergeResult, CreateWorktreeResult } from '../../bindings/allbeingsfuture/internal/models/models'
+import { useSessionStore } from './sessionStore'
 
 interface GitState {
   worktrees: WorktreeInfo[]
@@ -74,7 +75,10 @@ export const useGitStore = create<GitState>((set, get) => ({
   mergeWorktree: async (repoPath, branch, target) => {
     try {
       const result = await GitService.MergeWorktree(repoPath, branch, target)
-      if (result?.success) await get().loadWorktrees(repoPath)
+      if (result?.success) {
+        await get().loadWorktrees(repoPath)
+        await useSessionStore.getState().load().catch(() => {})
+      }
       return result
     } catch {
       return null
