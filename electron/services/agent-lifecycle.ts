@@ -73,11 +73,12 @@ export class AgentLifecycleManager {
   ): Promise<{ childSessionId: string }> {
     const parent = this.sessionService.getById(parentSessionId)
     if (!parent) throw new Error(`Parent session not found: ${parentSessionId}`)
+    const parentWorkDir = parent.worktreePath || parent.workingDirectory
 
     const child = this.sessionService.create({
       name: options.name,
       providerId: options.providerId || parent.providerId,
-      workingDirectory: parent.workingDirectory,
+      workingDirectory: parentWorkDir,
       parentSessionId,
       autoAccept: parent.autoAccept,
       permissionMode: parent.permissionMode,
@@ -109,11 +110,12 @@ export class AgentLifecycleManager {
   ): Promise<{ childSessionId: string; result: string }> {
     const parent = this.sessionService.getById(parentSessionId)
     if (!parent) throw new Error(`Parent session not found: ${parentSessionId}`)
+    const parentWorkDir = parent.worktreePath || parent.workingDirectory
 
     const child = this.sessionService.create({
       name: options.name,
       providerId: options.providerId || parent.providerId,
-      workingDirectory: parent.workingDirectory,
+      workingDirectory: parentWorkDir,
       parentSessionId,
       autoAccept: parent.autoAccept,
       permissionMode: parent.permissionMode,
@@ -295,7 +297,7 @@ export class AgentLifecycleManager {
       tracker = new AgentTracker(
         this.sessionService,
         session?.providerId || '',
-        session?.workingDirectory || process.cwd(),
+        session?.worktreePath || session?.workingDirectory || process.cwd(),
       )
       this.agentTrackers.set(parentSessionId, tracker)
     }

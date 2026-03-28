@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import React, { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Bot, ChevronDown, ChevronRight, Sparkles, Users } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
@@ -16,6 +16,7 @@ import ShellTerminalView from '../terminal/ShellTerminalView'
 import { usePanelStore } from '../../stores/panelStore'
 import type { ConversationMessage, FileChangeInfo } from '../../types/conversationTypes'
 import { useVirtualizedList } from './useVirtualizedList'
+import { resolveProviderDisplayInfo } from '../../utils/providerDisplay'
 
 interface Props {
   session: Session
@@ -200,24 +201,279 @@ function estimateMessageGroupHeight(group: MessageGroup): number {
 }
 
 /** Detect file-editing tool names (MCP allbeingsfuture tools + native Edit/Write) */
+function normalizeToolName(toolName: string): string {
+  const parts = toolName.split('__').filter(Boolean)
+  return parts.length > 0 ? parts[parts.length - 1] : toolName
+}
+
 function detectFileChangeType(toolName: string): FileChangeInfo['changeType'] | null {
-  if (toolName.includes('edit_file') || toolName === 'Edit') return 'edit'
-  if (toolName.includes('create_file')) return 'create'
-  if (toolName.includes('write_file') || toolName === 'Write') return 'write'
-  if (toolName.includes('delete_file')) return 'delete'
+  const normalized = normalizeToolName(toolName)
+  if (normalized === 'apply_patch') return 'edit'
+  if (normalized.includes('edit_file') || normalized === 'Edit') return 'edit'
+  if (normalized.includes('create_file')) return 'create'
+  if (normalized.includes('write_file') || normalized === 'Write') return 'write'
+  if (normalized.includes('delete_file')) return 'delete'
   return null
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function pickFirstText(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  }
+  return ''
+}
+
+function countDiffStats(diffText: string): Pick<FileChangeInfo, 'additions' | 'deletions'> {
+  let additions = 0
+  let deletions = 0
+
+  for (const line of diffText.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('***')) continue
+    if (line.startsWith('+')) additions += 1
+    if (line.startsWith('-')) deletions += 1
+  }
+
+  return { additions, deletions }
+}
+
+function inferChangeType(rawType: string): FileChangeInfo['changeType'] | null {
+  const normalized = rawType.toLowerCase()
+  if (!normalized) return null
+  if (/(create|add|new)/.test(normalized)) return 'create'
+  if (/(delete|remove)/.test(normalized)) return 'delete'
+  if (/(write|overwrite)/.test(normalized)) return 'write'
+  if (/(edit|update|modify|patch|rename|move)/.test(normalized)) return 'edit'
+  return null
+}
+
+function buildDiffFromBody(
+  filePath: string,
+  changeType: FileChangeInfo['changeType'],
+  bodyText: string,
+  originalPath?: string,
+): string {
+  const normalizedPath = filePath.replace(/\\/g, '/')
+  const normalizedOriginalPath = (originalPath || filePath).replace(/\\/g, '/')
+  const body = bodyText.trim()
+
+  if (body.startsWith('diff ') || body.startsWith('--- ')) {
+    return body
+  }
+
+  if (changeType === 'create') {
+    const additions = body.split('\n').filter(line => line.startsWith('+') && !line.startsWith('+++')).length
+    return body
+      ? `--- /dev/null\n+++ b/${normalizedPath}\n@@ -0,0 +1,${Math.max(additions, 1)} @@\n${body}`
+      : `--- /dev/null\n+++ b/${normalizedPath}`
+  }
+
+  if (changeType === 'delete') {
+    return body
+      ? `--- a/${normalizedOriginalPath}\n+++ /dev/null\n${body}`
+      : `--- a/${normalizedOriginalPath}\n+++ /dev/null`
+  }
+
+  return body
+    ? `--- a/${normalizedOriginalPath}\n+++ b/${normalizedPath}\n${body}`
+    : `--- a/${normalizedOriginalPath}\n+++ b/${normalizedPath}`
+}
+
+function buildDiffFromContents(
+  filePath: string,
+  changeType: FileChangeInfo['changeType'],
+  nextContent: string,
+  previousContent = '',
+): string {
+  const normalizedPath = filePath.replace(/\\/g, '/')
+
+  if (changeType === 'create' || changeType === 'write') {
+    const nextLines = nextContent ? nextContent.split('\n').map(line => `+${line}`).join('\n') : ''
+    const additions = nextContent ? nextContent.split('\n').length : 0
+    return nextLines
+      ? `--- /dev/null\n+++ b/${normalizedPath}\n@@ -0,0 +1,${Math.max(additions, 1)} @@\n${nextLines}`
+      : `--- /dev/null\n+++ b/${normalizedPath}`
+  }
+
+  if (changeType === 'delete') {
+    return `--- a/${normalizedPath}\n+++ /dev/null`
+  }
+
+  const previousLines = previousContent ? previousContent.split('\n').map(line => `-${line}`).join('\n') : ''
+  const nextLines = nextContent ? nextContent.split('\n').map(line => `+${line}`).join('\n') : ''
+  const deletions = previousContent ? previousContent.split('\n').length : 0
+  const additions = nextContent ? nextContent.split('\n').length : 0
+  const diffBody = [previousLines, nextLines].filter(Boolean).join('\n')
+
+  return diffBody
+    ? `--- a/${normalizedPath}\n+++ b/${normalizedPath}\n@@ -1,${Math.max(deletions, 1)} +1,${Math.max(additions, 1)} @@\n${diffBody}`
+    : `--- a/${normalizedPath}\n+++ b/${normalizedPath}`
+}
+
+function parseApplyPatchText(patchText: string): FileChangeInfo[] {
+  const results: FileChangeInfo[] = []
+  const lines = patchText.split(/\r?\n/)
+  let current: {
+    filePath: string
+    originalPath: string
+    changeType: FileChangeInfo['changeType']
+    bodyLines: string[]
+  } | null = null
+
+  const flushCurrent = () => {
+    if (!current) return
+    const operationDiff = buildDiffFromBody(
+      current.filePath,
+      current.changeType,
+      current.bodyLines.join('\n'),
+      current.originalPath,
+    )
+    const { additions, deletions } = countDiffStats(operationDiff)
+    results.push({
+      filePath: current.filePath,
+      changeType: current.changeType,
+      operationDiff,
+      additions,
+      deletions,
+    })
+    current = null
+  }
+
+  for (const line of lines) {
+    if (!line || line === '*** Begin Patch' || line === '*** End Patch') continue
+
+    const fileMatch = line.match(/^\*\*\* (Update|Add|Delete) File: (.+)$/)
+    if (fileMatch) {
+      flushCurrent()
+      const filePath = fileMatch[2].trim()
+      current = {
+        filePath,
+        originalPath: filePath,
+        changeType: fileMatch[1] === 'Add' ? 'create' : fileMatch[1] === 'Delete' ? 'delete' : 'edit',
+        bodyLines: [],
+      }
+      continue
+    }
+
+    if (!current) continue
+
+    if (line.startsWith('*** Move to: ')) {
+      current.filePath = line.slice('*** Move to: '.length).trim()
+      continue
+    }
+
+    current.bodyLines.push(line)
+  }
+
+  flushCurrent()
+  return results
+}
+
+function parseApplyPatchChanges(changes: unknown): FileChangeInfo[] {
+  if (!changes) return []
+
+  if (typeof changes === 'string') {
+    return parseApplyPatchText(changes)
+  }
+
+  if (Array.isArray(changes)) {
+    return changes.flatMap(change => parseApplyPatchChanges(change))
+  }
+
+  if (!isRecord(changes)) {
+    return []
+  }
+
+  if (Array.isArray(changes.operations) || isRecord(changes.operations)) {
+    const nested = parseApplyPatchChanges(changes.operations)
+    if (nested.length > 0) return nested
+  }
+
+  if (Array.isArray(changes.operation) || isRecord(changes.operation)) {
+    const nested = parseApplyPatchChanges(changes.operation)
+    if (nested.length > 0) return nested
+  }
+
+  if (typeof changes.changes === 'string' || Array.isArray(changes.changes) || isRecord(changes.changes)) {
+    const nested = parseApplyPatchChanges(changes.changes)
+    if (nested.length > 0) return nested
+  }
+
+  const diffText = pickFirstText(changes.diff, changes.patch, changes.operationDiff, changes.text)
+  if (diffText.includes('*** Begin Patch')) {
+    return parseApplyPatchText(diffText)
+  }
+
+  const filePath = pickFirstText(
+    changes.path,
+    changes.filePath,
+    changes.filename,
+    changes.file,
+    changes.newPath,
+    changes.afterPath,
+    changes.targetPath,
+    changes.to,
+  )
+  if (!filePath) return []
+
+  const originalPath = pickFirstText(
+    changes.oldPath,
+    changes.beforePath,
+    changes.sourcePath,
+    changes.from,
+  ) || filePath
+  const explicitType = inferChangeType(
+    pickFirstText(changes.changeType, changes.type, changes.status, changes.kind, changes.action, changes.operation),
+  )
+  const changeType = explicitType || (diffText ? 'edit' : null) || 'edit'
+  const nextContent = pickFirstText(changes.content, changes.newContent, changes.after)
+  const previousContent = pickFirstText(changes.oldContent, changes.previousContent, changes.before)
+  const operationDiff = diffText
+    ? buildDiffFromBody(filePath, changeType, diffText, originalPath)
+    : buildDiffFromContents(filePath, changeType, nextContent, previousContent)
+  const { additions, deletions } = countDiffStats(operationDiff)
+
+  return [{
+    filePath,
+    changeType,
+    operationDiff,
+    additions,
+    deletions,
+  }]
+}
+
 /** Extract FileChangeInfo from tool_use messages that modify files */
-function extractFileChanges(convMessages: ConversationMessage[]): ConversationMessage[] {
+export function extractFileChanges(convMessages: ConversationMessage[]): ConversationMessage[] {
   const results: ConversationMessage[] = []
   for (const msg of convMessages) {
     if (msg.role !== 'tool_use' || !msg.toolName) continue
+    const input = msg.toolInput || {}
+    const normalizedToolName = normalizeToolName(msg.toolName)
+
+    if (normalizedToolName === 'apply_patch') {
+      const patchChanges = parseApplyPatchChanges(input.changes ?? input.operation ?? input.operations ?? input)
+      for (const fileChange of patchChanges) {
+        results.push({
+          ...msg,
+          fileChange,
+        })
+      }
+      continue
+    }
+
     const changeType = detectFileChangeType(msg.toolName)
     if (!changeType) continue
 
-    const input = msg.toolInput || {}
-    const filePath = (input.file_path as string) || (input.path as string) || ''
+    const filePath = (input.file_path as string)
+      || (input.path as string)
+      || (input.filePath as string)
+      || (input.targetPath as string)
+      || (input.newPath as string)
+      || ''
     if (!filePath) continue
 
     let additions = 0
@@ -252,6 +508,7 @@ function extractFileChanges(convMessages: ConversationMessage[]): ConversationMe
 
 const TOOL_ICONS: Record<string, string> = {
   Read: '📖', Write: '✍️', Edit: '📝', Bash: '💻', Glob: '📂', Grep: '🔎',
+  apply_patch: '🩹',
   Agent: '🤖', WebSearch: '🌐', WebFetch: '🌐', ToolSearch: '🔍',
 }
 
@@ -393,11 +650,12 @@ const ChildAgentBlock = memo(function ChildAgentBlock({ name, messages, childSes
 ))
 
 /** Streaming indicator that shows tool operations when available */
-function StreamingIndicator({ messages }: { messages: ChatMessage[] }) {
+function StreamingIndicator({ messages, providerId }: { messages: ChatMessage[]; providerId?: string }) {
   const lastMsg = messages[messages.length - 1]
   const toolUse = lastMsg?.role === 'assistant' ? (lastMsg as any).toolUse as Array<{ name: string; input?: any }> | undefined : undefined
   const thinking = lastMsg?.role === 'assistant' ? (lastMsg as any).thinking as string | undefined : undefined
   const latestTool = toolUse?.[toolUse.length - 1]
+  const providerLabel = resolveProviderDisplayInfo(providerId).label
 
   let statusText = '正在思考...'
   let statusDetail = ''
@@ -430,24 +688,29 @@ function StreamingIndicator({ messages }: { messages: ChatMessage[] }) {
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.3 }}
     >
-      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-purple-500/10 bg-gradient-to-br from-purple-500/20 to-blue-500/20 text-purple-300">
+      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-2xl border border-white/[0.08] bg-[linear-gradient(180deg,rgba(30,41,59,0.72),rgba(15,23,42,0.96))] text-slate-100 shadow-[0_10px_28px_rgba(2,6,23,0.22)]">
         <Bot size={15} />
       </div>
-      <div className="flex flex-col gap-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-4 py-2.5">
-        <div className="flex items-center gap-2.5">
-          <span className="flex gap-1">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '0ms' }} />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '150ms' }} />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-purple-400" style={{ animationDelay: '300ms' }} />
-          </span>
-          <span className="text-xs text-gray-400">{statusText}</span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1 py-1">
+        <div className="flex items-center gap-2 text-[11px] text-slate-400/88">
+          <span className="font-medium tracking-[0.01em] text-slate-100/92">{providerLabel}</span>
+          <span className="h-1 w-1 rounded-full bg-slate-300/70" />
+          <span>{statusText}</span>
           {toolUse && toolUse.length > 1 && (
-            <span className="text-[10px] text-gray-600">({toolUse.length} 个操作)</span>
+            <span className="text-[10px] text-slate-500">({toolUse.length} 个操作)</span>
           )}
         </div>
-        {statusDetail && (
-          <span className="text-[10px] text-gray-600 font-mono truncate max-w-[400px]">{statusDetail}</span>
-        )}
+        <div className="border-l border-white/[0.08] pl-4">
+          {statusDetail ? (
+            <span className="block max-w-[540px] truncate font-mono text-[12px] text-slate-400/78">{statusDetail}</span>
+          ) : (
+            <span className="flex gap-1.5 py-1">
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300/75" style={{ animationDelay: '0ms' }} />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300/75" style={{ animationDelay: '150ms' }} />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-slate-300/75" style={{ animationDelay: '300ms' }} />
+            </span>
+          )}
+        </div>
       </div>
     </motion.div>
   )
@@ -488,6 +751,7 @@ export default function ConversationView({ session }: Props) {
   const bottomRef = useRef<HTMLDivElement | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const scrollMetricsFrameRef = useRef<number | null>(null)
+  const autoScrollFrameRef = useRef<number | null>(null)
   const isNearBottomRef = useRef(true)
   const prevMsgCountRef = useRef(0)
   const lastEventTimeRef = useRef(0)
@@ -519,6 +783,33 @@ export default function ConversationView({ session }: Props) {
     })
   }, [commitScrollMetrics])
 
+  const cancelPendingAutoScroll = useCallback(() => {
+    if (autoScrollFrameRef.current !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(autoScrollFrameRef.current)
+      autoScrollFrameRef.current = null
+    }
+  }, [])
+
+  const scrollToBottom = useCallback((afterPaint = false) => {
+    const applyScroll = () => {
+      autoScrollFrameRef.current = null
+      const el = scrollContainerRef.current
+      if (!el) return
+      el.scrollTop = el.scrollHeight
+      isNearBottomRef.current = true
+      commitScrollMetrics()
+    }
+
+    cancelPendingAutoScroll()
+
+    if (afterPaint && typeof requestAnimationFrame === 'function') {
+      autoScrollFrameRef.current = requestAnimationFrame(applyScroll)
+      return
+    }
+
+    applyScroll()
+  }, [cancelPendingAutoScroll, commitScrollMetrics])
+
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current
     if (!el) return
@@ -547,14 +838,21 @@ export default function ConversationView({ session }: Props) {
         cancelAnimationFrame(scrollMetricsFrameRef.current)
         scrollMetricsFrameRef.current = null
       }
+      cancelPendingAutoScroll()
     }
-  }, [])
+  }, [cancelPendingAutoScroll])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     prevMsgCountRef.current = 0
     isNearBottomRef.current = true
     forceScrollUntilRef.current = Date.now() + 3000
   }, [session.id])
+
+  useLayoutEffect(() => {
+    if (messages.length === 0) return
+    if (Date.now() >= forceScrollUntilRef.current) return
+    scrollToBottom()
+  }, [messages, scrollToBottom, session.id])
 
   useEffect(() => {
     commitScrollMetrics()
@@ -603,24 +901,16 @@ export default function ConversationView({ session }: Props) {
     const forceScroll = Date.now() < forceScrollUntilRef.current
 
     if (forceScroll && messages.length > 0) {
-      // During the force-scroll window (3s) after session switch, every
-      // messages update scrolls to bottom. Double-rAF ensures React has
-      // flushed all DOM nodes before we measure scrollHeight.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const el = scrollContainerRef.current
-          if (el) el.scrollTop = el.scrollHeight
-        })
-      })
+      scrollToBottom(true)
       return
     }
 
     if (!isNearBottomRef.current) return
 
     if (messages.length > previousCount) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      scrollToBottom()
     }
-  }, [messages, streaming])
+  }, [messages, scrollToBottom, streaming])
 
   const shellPanelVisible = usePanelStore((state) => state.shellPanelVisible)
   const isEnded = ['completed', 'terminated', 'error'].includes(session.status)
@@ -658,11 +948,12 @@ export default function ConversationView({ session }: Props) {
     if (group.type === 'tool_group' && group.convMessages) {
       const isLastGroup = group.index + group.messages.length >= groupedMessagesSource.length
       const fileOps = extractFileChanges(group.convMessages)
+      const fileOpMessageIds = new Set(fileOps.map((operation) => operation.id))
       const stickerMsgs = group.convMessages.filter(
         (m) => m.toolName === 'send_sticker' && m.toolInput?.mood,
       )
       const nonStickerMsgs = group.convMessages.filter(
-        (m) => m.toolName !== 'send_sticker',
+        (m) => m.toolName !== 'send_sticker' && !fileOpMessageIds.has(m.id),
       )
       return (
         <React.Fragment key={`tool-${group.index}`}>
@@ -707,15 +998,26 @@ export default function ConversationView({ session }: Props) {
     }
 
     return group.messages.map((msg, index) => (
-      <MessageBubble key={`msg-${group.index}-${index}`} message={msg} isStreaming={streaming} />
+      <MessageBubble
+        key={`msg-${group.index}-${index}`}
+        message={msg}
+        isStreaming={streaming}
+        providerId={session.providerId}
+      />
     ))
-  }, [groupedMessagesSource.length, streaming])
+  }, [groupedMessagesSource.length, session.providerId, streaming])
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden" data-testid="conversation-view">
       <SessionToolbar session={session} />
 
-      <div ref={scrollContainerRef} onScroll={handleScroll} data-scroll-container className="flex-1 overflow-y-auto px-5 py-5">
+      <div
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        data-scroll-container
+        className="flex-1 overflow-y-auto px-5 py-5"
+        style={{ overflowAnchor: 'none' }}
+      >
         <div className="mx-auto flex max-w-4xl flex-col gap-3">
           {!ready && messages.length === 0 ? (
             /* Shimmer skeleton while session is initializing */
@@ -766,7 +1068,7 @@ export default function ConversationView({ session }: Props) {
 
           <AnimatePresence>
             {(streaming || ['starting', 'running'].includes(session.status)) && (messages.length === 0 || messages[messages.length - 1]?.role === 'user' || (messages[messages.length - 1]?.role === 'assistant' && !(messages[messages.length - 1] as any)?.content?.trim())) && (
-              <StreamingIndicator messages={messages} />
+              <StreamingIndicator messages={messages} providerId={session.providerId} />
             )}
           </AnimatePresence>
 

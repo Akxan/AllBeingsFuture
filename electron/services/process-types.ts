@@ -27,6 +27,7 @@ export interface AgentInfo {
 export interface BridgeEvent {
   event: 'delta' | 'done' | 'error' | 'tool' | 'thinking' | 'agent_task'
   text?: string
+  messageKind?: 'assistant' | 'agent'
   error?: string
   name?: string
   input?: Record<string, unknown>
@@ -92,6 +93,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system' | 'tool_use' | 'thinking'
   content: string
   timestamp: string
+  /** Visual hint for renderer; defaults to normal assistant message when omitted */
+  presentation?: 'message' | 'commentary'
   toolUse?: ToolUseEntry[]
   thinking?: string
   images?: string[]

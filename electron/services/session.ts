@@ -147,10 +147,10 @@ export class SessionService {
 
   setWorktreeInfo(id: string, worktreePath: string, branch: string, baseCommit: string, baseBranch: string, sourceRepo: string): void {
     this.db.raw.prepare(`
-      UPDATE sessions SET worktree_path = ?, worktree_branch = ?,
-        worktree_base_commit = ?, worktree_base_branch = ?, worktree_source_repo = ?
+      UPDATE sessions SET working_directory = ?, worktree_path = ?, worktree_branch = ?,
+        worktree_base_commit = ?, worktree_base_branch = ?, worktree_source_repo = ?, worktree_merged = 0
       WHERE id = ?
-    `).run(worktreePath, branch, baseCommit, baseBranch, sourceRepo, id)
+    `).run(worktreePath, worktreePath, branch, baseCommit, baseBranch, sourceRepo, id)
   }
 
   markWorktreeMerged(id: string): void {

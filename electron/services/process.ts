@@ -264,8 +264,10 @@ export class ProcessService {
     if (!provider) throw new Error(`Provider not found: ${session.providerId}`)
 
     // Initialize bridge adapter for this session
+    const effectiveWorkDir = session.worktreePath || session.workingDirectory || process.cwd()
+
     const config: Record<string, unknown> = {
-      workDir: session.workingDirectory || process.cwd(),
+      workDir: effectiveWorkDir,
       command: provider.command || undefined,
       autoAccept: session.autoAccept,
       autoAcceptFlag: provider.autoAcceptFlag || undefined,
@@ -386,6 +388,50 @@ export class ProcessService {
     return result
   }
 
+  private resolveAssistantPresentation(event: Pick<BridgeEvent, 'messageKind'>): ChatMessage['presentation'] {
+    return event.messageKind === 'agent' ? 'commentary' : 'message'
+  }
+
+  private appendAssistantChunk(
+    messages: ChatMessage[],
+    text: string,
+    options: {
+      presentation?: ChatMessage['presentation']
+      childSessionId?: string
+      childAgentName?: string
+    } = {},
+  ): ChatMessage {
+    const presentation = options.presentation || 'message'
+    const lastMsg = messages[messages.length - 1]
+
+    if (
+      lastMsg?.role === 'assistant'
+      && !lastMsg.toolName
+      && !lastMsg.toolUse
+      && lastMsg.childSessionId === options.childSessionId
+      && (lastMsg.presentation || 'message') === presentation
+    ) {
+      lastMsg.content += text
+      if (!lastMsg.presentation) {
+        lastMsg.presentation = presentation
+      }
+      return lastMsg
+    }
+
+    const msg: ChatMessage = {
+      role: 'assistant',
+      content: text,
+      timestamp: new Date().toISOString(),
+      presentation,
+    }
+    if (options.childSessionId) {
+      msg.childSessionId = options.childSessionId
+      msg.childAgentName = options.childAgentName
+    }
+    messages.push(msg)
+    return msg
+  }
+
   /**
    * Mirror a message to the active child session's in-memory state and persist to DB.
    * This ensures child agent sessions have the same detailed conversation records
@@ -395,12 +441,12 @@ export class ProcessService {
     const childState = this.getOrCreateState(childSessionId)
     // For delta events, merge into the last assistant message or create new one
     if (msg.role === 'assistant' && !msg.toolUse && !msg.thinking) {
-      const lastMsg = childState.messages[childState.messages.length - 1]
-      if (lastMsg?.role === 'assistant' && !lastMsg.toolName && !lastMsg.toolUse) {
-        lastMsg.content += msg.content
-        this.scheduleLastMessagePatch(childSessionId)
-        return
-      }
+      this.appendAssistantChunk(childState.messages, msg.content, {
+        presentation: msg.presentation,
+      })
+      childState.streaming = true
+      this.scheduleLastMessagePatch(childSessionId)
+      return
     }
     childState.messages.push(msg)
     childState.streaming = true
@@ -435,22 +481,13 @@ export class ProcessService {
           this.stateInference.markWorkStarted(sessionId)
         }
         const childInfo = this.agentLifecycle.getActiveChildInfo(sessionId)
+        const presentation = this.resolveAssistantPresentation(event)
         // Append to last assistant message or create new one
-        const lastMsg = state.messages[state.messages.length - 1]
-        if (lastMsg?.role === 'assistant' && lastMsg.childSessionId === childInfo?.id) {
-          lastMsg.content += event.text || ''
-        } else {
-          const msg: ChatMessage = {
-            role: 'assistant',
-            content: event.text || '',
-            timestamp: new Date().toISOString(),
-          }
-          if (childInfo) {
-            msg.childSessionId = childInfo.id
-            msg.childAgentName = childInfo.name
-          }
-          state.messages.push(msg)
-        }
+        this.appendAssistantChunk(state.messages, event.text || '', {
+          presentation,
+          childSessionId: childInfo?.id,
+          childAgentName: childInfo?.name,
+        })
         // Feed text to output parser for activity detection
         if (event.text) {
           this.outputParser.feed(sessionId, event.text)
@@ -465,6 +502,7 @@ export class ProcessService {
             role: 'assistant',
             content: event.text,
             timestamp: new Date().toISOString(),
+            presentation,
           })
         }
         break

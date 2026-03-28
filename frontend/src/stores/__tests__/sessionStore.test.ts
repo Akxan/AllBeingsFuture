@@ -4,10 +4,17 @@ import type { Session } from '../../../bindings/allbeingsfuture/internal/models/
 const serviceMocks = vi.hoisted(() => ({
   sessionService: {
     GetAll: vi.fn(),
+    GetByID: vi.fn(),
     Create: vi.fn(),
     Delete: vi.fn(),
     End: vi.fn(),
+    SetWorktreeInfo: vi.fn(),
     MarkWorktreeMerged: vi.fn(),
+  },
+  gitService: {
+    GetRepoRoot: vi.fn(),
+    CreateWorktree: vi.fn(),
+    RemoveWorktree: vi.fn(),
   },
   processService: {
     GetChatState: vi.fn(),
@@ -24,6 +31,7 @@ const serviceMocks = vi.hoisted(() => ({
 
 vi.mock('../../../bindings/allbeingsfuture/internal/services', () => ({
   SessionService: serviceMocks.sessionService,
+  GitService: serviceMocks.gitService,
   ProcessService: serviceMocks.processService,
 }))
 
@@ -77,8 +85,70 @@ function resetStore() {
 
 describe('sessionStore runtime status sync', () => {
   beforeEach(() => {
+    vi.useRealTimers()
     vi.clearAllMocks()
     resetStore()
+  })
+
+  it('creates worktree-backed sessions when isolation is enabled', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-03-28T13:55:11'))
+
+    const worktreePath = 'C:/repo/.allbeingsfuture-worktrees/fix-isolation-20260328135511'
+    const createdSession = makeSession({
+      id: 'session-worktree',
+      workingDirectory: worktreePath,
+    })
+    const hydratedSession = makeSession({
+      id: 'session-worktree',
+      workingDirectory: worktreePath,
+      worktreePath,
+      worktreeBranch: 'worktree-fix-isolation-20260328135511',
+      worktreeBaseCommit: 'abc123',
+      worktreeBaseBranch: 'main',
+      worktreeSourceRepo: 'C:/repo',
+    })
+
+    serviceMocks.gitService.GetRepoRoot.mockResolvedValue('C:/repo')
+    serviceMocks.gitService.CreateWorktree.mockResolvedValue({
+      worktreePath,
+      branch: 'worktree-fix-isolation-20260328135511',
+      baseCommit: 'abc123',
+      baseBranch: 'main',
+    })
+    serviceMocks.sessionService.Create.mockResolvedValue(createdSession)
+    serviceMocks.sessionService.SetWorktreeInfo.mockResolvedValue(undefined)
+    serviceMocks.sessionService.GetByID.mockResolvedValue(hydratedSession)
+
+    const session = await useSessionStore.getState().create({
+      name: 'Fix Isolation',
+      workingDirectory: 'C:/repo',
+      providerId: 'codex',
+      worktreeEnabled: true,
+      gitRepoPath: 'C:/repo',
+      gitBranch: '',
+    } as any)
+
+    expect(serviceMocks.gitService.GetRepoRoot).toHaveBeenCalledWith('C:/repo')
+    expect(serviceMocks.gitService.CreateWorktree).toHaveBeenCalledWith(
+      'C:/repo',
+      'fix-isolation-20260328135511',
+      'fix-isolation-20260328135511',
+    )
+    expect(serviceMocks.sessionService.Create).toHaveBeenCalledWith(expect.objectContaining({
+      workingDirectory: worktreePath,
+    }))
+    expect(serviceMocks.sessionService.SetWorktreeInfo).toHaveBeenCalledWith(
+      'session-worktree',
+      worktreePath,
+      'worktree-fix-isolation-20260328135511',
+      'abc123',
+      'main',
+      'C:/repo',
+    )
+    expect(serviceMocks.sessionService.GetByID).toHaveBeenCalledWith('session-worktree')
+    expect(session).toEqual(hydratedSession)
+    expect(useSessionStore.getState().sessions[0]).toEqual(hydratedSession)
   })
 
   it('marks a selected running session idle once polling reports streaming has stopped', async () => {
@@ -101,6 +171,31 @@ describe('sessionStore runtime status sync', () => {
     expect(state.sessions[0]?.status).toBe('idle')
   })
 
+  it('preserves the selected chat snapshot reference when polling returns the same content', async () => {
+    const timestamp = new Date().toISOString()
+    const existingMessages = [
+      { role: 'assistant', content: 'same content', timestamp } as never,
+    ]
+
+    serviceMocks.processService.GetChatState.mockResolvedValue({
+      messages: [{ role: 'assistant', content: 'same content', timestamp }],
+      streaming: false,
+      error: '',
+    })
+
+    useSessionStore.setState({
+      selectedId: 'session-1',
+      sessions: [makeSession({ status: 'idle' })],
+      messages: existingMessages,
+      streaming: false,
+      chatError: '',
+    })
+
+    await useSessionStore.getState().pollChat('session-1')
+
+    expect(useSessionStore.getState().messages).toBe(existingMessages)
+  })
+
   it('updates background session status from chat updates without clobbering the current conversation', () => {
     useSessionStore.setState({
       selectedId: 'session-1',
@@ -121,6 +216,30 @@ describe('sessionStore runtime status sync', () => {
     const state = useSessionStore.getState()
     expect(state.messages).toEqual([{ role: 'assistant', content: 'keep me' }])
     expect(state.sessions.find((session) => session.id === 'session-2')?.status).toBe('idle')
+  })
+
+  it('ignores full chat updates that do not change the selected conversation payload', () => {
+    const timestamp = new Date().toISOString()
+    const existingMessages = [
+      { role: 'assistant', content: 'keep me', timestamp } as never,
+    ]
+
+    useSessionStore.setState({
+      selectedId: 'session-1',
+      messages: existingMessages,
+      streaming: false,
+      chatError: '',
+      sessions: [makeSession({ id: 'session-1', status: 'idle' })],
+    })
+
+    useSessionStore.getState().handleChatUpdate({
+      sessionId: 'session-1',
+      messages: [{ role: 'assistant', content: 'keep me', timestamp } as never],
+      streaming: false,
+      error: '',
+    })
+
+    expect(useSessionStore.getState().messages).toBe(existingMessages)
   })
 
   it('applies streaming patches incrementally for the selected session', () => {

@@ -1,7 +1,7 @@
 import { create } from 'zustand'
-import { SessionService, ProcessService } from '../../bindings/allbeingsfuture/internal/services'
+import { SessionService, ProcessService, GitService } from '../../bindings/allbeingsfuture/internal/services'
 import { ResumeSession as ResumeSessionAPI, ListAllAgents as ListAllAgentsAPI, SpawnChildSession, SendToChild } from '../../bindings/allbeingsfuture/internal/services/processservice'
-import type { Session, SessionConfig, ChatMessage, ChatState } from '../../bindings/allbeingsfuture/internal/models/models'
+import type { Session, SessionConfig, ChatMessage, ChatState, CreateWorktreeResult } from '../../bindings/allbeingsfuture/internal/models/models'
 
 /** Session objects from the backend may carry parentSessionId for child sessions */
 type SessionWithParent = Session & { parentSessionId?: string }
@@ -14,6 +14,7 @@ type PatchedChatMessage = ChatMessage & {
 }
 
 const ACTIVE_RUNTIME_STATUSES = new Set<Session['status']>(['starting', 'running'])
+type WorktreeCreateResult = CreateWorktreeResult & { baseBranch?: string }
 
 function syncRuntimeStatus(sessions: Session[], sessionId: string, streaming: boolean): Session[] {
   let changed = false
@@ -49,6 +50,133 @@ function sameMessageIdentity(left: ChatMessage | undefined, right: ChatMessage):
   const rightAny = right as PatchedChatMessage
   return leftAny.timestamp === rightAny.timestamp
     && leftAny.childSessionId === rightAny.childSessionId
+}
+
+function normalizeWorktreeSegment(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+function buildWorktreeIdentifiers(config: SessionConfig): { branchName: string; taskId: string } {
+  const explicitBranch = normalizeWorktreeSegment(config.gitBranch || '')
+  if (explicitBranch) {
+    return { branchName: explicitBranch, taskId: explicitBranch }
+  }
+
+  const fromName = normalizeWorktreeSegment(config.name || '')
+  const now = new Date()
+  const stamp = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+    String(now.getHours()).padStart(2, '0'),
+    String(now.getMinutes()).padStart(2, '0'),
+    String(now.getSeconds()).padStart(2, '0'),
+  ].join('')
+  const baseName = fromName || 'session'
+  const branchName = `${baseName}-${stamp}`
+  return { branchName, taskId: branchName }
+}
+
+async function createSessionWithWorktree(config: SessionConfig): Promise<Session | null> {
+  const repoCandidate = (config.gitRepoPath || config.workingDirectory || '').trim()
+  if (!repoCandidate) {
+    throw new Error('启用 Worktree 隔离时必须提供 Git 仓库目录')
+  }
+
+  const repoPath = await GitService.GetRepoRoot(repoCandidate).catch(() => '')
+  if (!repoPath) {
+    throw new Error(`目录不是 Git 仓库，无法启用隔离: ${repoCandidate}`)
+  }
+
+  const { branchName, taskId } = buildWorktreeIdentifiers(config)
+  const worktree = await GitService.CreateWorktree(repoPath, branchName, taskId) as WorktreeCreateResult | null
+  if (!worktree?.worktreePath || !worktree.branch) {
+    throw new Error('创建 Worktree 失败')
+  }
+
+  try {
+    const session = await SessionService.Create({
+      ...config,
+      workingDirectory: worktree.worktreePath,
+    })
+    if (!session) return null
+
+    await SessionService.SetWorktreeInfo(
+      session.id,
+      worktree.worktreePath,
+      worktree.branch,
+      worktree.baseCommit || '',
+      worktree.baseBranch || '',
+      repoPath,
+    )
+
+    const refreshed = await SessionService.GetByID(session.id)
+    if (refreshed) return refreshed
+
+    return {
+      ...session,
+      workingDirectory: worktree.worktreePath,
+      worktreePath: worktree.worktreePath,
+      worktreeBranch: worktree.branch,
+      worktreeBaseCommit: worktree.baseCommit || '',
+      worktreeBaseBranch: worktree.baseBranch || '',
+      worktreeSourceRepo: repoPath,
+      worktreeMerged: false,
+    } as Session
+  } catch (err) {
+    await GitService.RemoveWorktree(repoPath, worktree.worktreePath, true).catch(() => {})
+    throw err
+  }
+}
+
+function stableSerialize(value: unknown): string {
+  if (value == null) return ''
+  try {
+    return JSON.stringify(value) || ''
+  } catch {
+    return String(value)
+  }
+}
+
+function sameMessages(left: ChatMessage[], right: ChatMessage[]): boolean {
+  if (left === right) return true
+  if (left.length !== right.length) return false
+
+  for (let index = 0; index < left.length; index += 1) {
+    const leftMsg = left[index] as PatchedChatMessage & Record<string, unknown>
+    const rightMsg = right[index] as PatchedChatMessage & Record<string, unknown>
+
+    if (
+      leftMsg.role !== rightMsg.role
+      || leftMsg.content !== rightMsg.content
+      || leftMsg.timestamp !== rightMsg.timestamp
+      || leftMsg.childSessionId !== rightMsg.childSessionId
+      || leftMsg.childAgentName !== rightMsg.childAgentName
+      || leftMsg.toolName !== rightMsg.toolName
+      || leftMsg.partial !== rightMsg.partial
+      || leftMsg.isThinking !== rightMsg.isThinking
+      || leftMsg.presentation !== rightMsg.presentation
+    ) {
+      return false
+    }
+
+    if (
+      stableSerialize(leftMsg.toolInput) !== stableSerialize(rightMsg.toolInput)
+      || stableSerialize(leftMsg.toolUse) !== stableSerialize(rightMsg.toolUse)
+      || stableSerialize(leftMsg.images) !== stableSerialize(rightMsg.images)
+      || stableSerialize(leftMsg.usage) !== stableSerialize(rightMsg.usage)
+      || stableSerialize(leftMsg.thinking) !== stableSerialize(rightMsg.thinking)
+    ) {
+      return false
+    }
+  }
+
+  return true
 }
 
 function withPatchedToolUse(messages: ChatMessage[], msg: ChatMessage): ChatMessage[] {
@@ -195,7 +323,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   create: async (config) => {
     try {
-      const session = await SessionService.Create(config)
+      const session = config.worktreeEnabled
+        ? await createSessionWithWorktree(config)
+        : await SessionService.Create(config)
       if (session) set(s => ({ sessions: [session, ...s.sessions] }))
       return session
     } catch (err) {
@@ -281,12 +411,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     try {
       const state: ChatState | null = await ProcessService.GetChatState(id)
       if (state) {
-        set((prev) => ({
-          messages: state.messages ?? [],
-          streaming: state.streaming,
-          chatError: state.error || '',
-          sessions: syncRuntimeStatus(prev.sessions, id, state.streaming),
-        }))
+        const current = get()
+        const nextMessages = state.messages ?? []
+        const nextError = state.error || ''
+        const nextSessions = syncRuntimeStatus(current.sessions, id, state.streaming)
+        const isSelected = current.selectedId === id
+        const messagesChanged = isSelected && !sameMessages(current.messages, nextMessages)
+        const metaChanged = isSelected && (
+          current.streaming !== state.streaming
+          || current.chatError !== nextError
+        )
+        const sessionsChanged = nextSessions !== current.sessions
+
+        if (!messagesChanged && !metaChanged && !sessionsChanged) {
+          return
+        }
+
+        set({
+          ...(sessionsChanged ? { sessions: nextSessions } : {}),
+          ...(isSelected
+            ? {
+                messages: messagesChanged ? nextMessages : current.messages,
+                streaming: state.streaming,
+                chatError: nextError,
+              }
+            : {}),
+        })
       }
     } catch (err: unknown) {
       set({ chatError: err instanceof Error ? err.message : String(err) })
@@ -294,19 +444,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   handleChatUpdate: (data) => {
-    const { selectedId } = get()
-    set((state) => {
-      const next: Partial<SessionState> = {
-        sessions: syncRuntimeStatus(state.sessions, data.sessionId, data.streaming),
-      }
+    const current = get()
+    const nextSessions = syncRuntimeStatus(current.sessions, data.sessionId, data.streaming)
+    const isSelected = data.sessionId === current.selectedId
+    const nextMessages = data.messages ?? []
+    const nextError = data.error || ''
+    const messagesChanged = isSelected && !sameMessages(current.messages, nextMessages)
+    const metaChanged = isSelected && (
+      current.streaming !== data.streaming
+      || current.chatError !== nextError
+    )
+    const sessionsChanged = nextSessions !== current.sessions
 
-      if (data.sessionId === selectedId) {
-        next.messages = data.messages ?? []
-        next.streaming = data.streaming
-        next.chatError = data.error || ''
-      }
+    if (!messagesChanged && !metaChanged && !sessionsChanged) {
+      return
+    }
 
-      return next
+    set({
+      ...(sessionsChanged ? { sessions: nextSessions } : {}),
+      ...(isSelected
+        ? {
+            messages: messagesChanged ? nextMessages : current.messages,
+            streaming: data.streaming,
+            chatError: nextError,
+          }
+        : {}),
     })
   },
 

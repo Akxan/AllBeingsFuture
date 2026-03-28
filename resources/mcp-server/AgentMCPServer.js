@@ -22,14 +22,14 @@
  */
 
 import { createInterface } from 'node:readline'
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { dirname, resolve, isAbsolute } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 // ---- Configuration ----
 const SESSION_ID = process.env.ABF_SESSION_ID || ''
 const BRIDGE_PORT = parseInt(process.env.ABF_BRIDGE_PORT || '0', 10)
-const WORK_DIR = process.env.ABF_WORK_DIR || process.cwd()
+let currentWorkDir = process.env.ABF_WORK_DIR || process.cwd()
 const SESSION_MODE = process.env.ABF_SESSION_MODE || 'supervisor'
 const MCP_TOKEN = process.env.ABF_MCP_TOKEN || ''
 
@@ -149,6 +149,69 @@ function bridgeRequest(method, params, timeoutMs = 120000) {
       params: params || {},
     }))
   })
+}
+
+function findGitMetadataPath(startDir) {
+  let dir = resolve(startDir || currentWorkDir || process.cwd())
+  while (true) {
+    const gitPath = resolve(dir, '.git')
+    if (existsSync(gitPath)) return gitPath
+    const parent = resolve(dir, '..')
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+function isWorktreeSessionDir(dir) {
+  const markers = [
+    '.allbeingsfuture-worktrees',
+    '.abf-worktrees',
+    '.claude/worktrees',
+    '.claude\\worktrees',
+  ]
+  if (markers.some(marker => String(dir || '').includes(marker))) return true
+
+  const gitPath = findGitMetadataPath(dir)
+  if (!gitPath) return false
+
+  try {
+    return statSync(gitPath).isFile()
+  } catch {
+    return false
+  }
+}
+
+function requireWorktreeForWrite() {
+  const gitPath = findGitMetadataPath(currentWorkDir)
+  if (!gitPath) return null
+  if (isWorktreeSessionDir(currentWorkDir)) return null
+
+  return {
+    isError: true,
+    content: [{
+      type: 'text',
+      text: `Write operations are blocked in non-worktree sessions. Call enter_worktree first (cwd: ${currentWorkDir}).`,
+    }],
+  }
+}
+
+function updateCurrentWorkDirFromResult(result) {
+  const candidates = [
+    result?.path,
+    result?.worktreePath,
+    result?.worktree_path,
+    result?.data?.path,
+    result?.data?.worktreePath,
+    result?.data?.worktree_path,
+    result?.worktree?.path,
+    result?.worktree?.worktreePath,
+  ]
+
+  const nextDir = candidates.find(value => typeof value === 'string' && value.trim().length > 0)
+  if (nextDir) {
+    currentWorkDir = nextDir
+    log(`Updated work dir to worktree: ${currentWorkDir}`)
+  }
 }
 
 /**
@@ -430,10 +493,13 @@ function getVisibleTools() {
 
 function resolvePath(filePath) {
   if (isAbsolute(filePath)) return filePath
-  return resolve(WORK_DIR, filePath)
+  return resolve(currentWorkDir, filePath)
 }
 
 function handleEditFile(args) {
+  const isolationError = requireWorktreeForWrite()
+  if (isolationError) return isolationError
+
   const { file_path, old_string, new_string } = args
   const fullPath = resolvePath(file_path)
 
@@ -459,6 +525,9 @@ function handleEditFile(args) {
 }
 
 function handleWriteFile(args) {
+  const isolationError = requireWorktreeForWrite()
+  if (isolationError) return isolationError
+
   const { file_path, content } = args
   const fullPath = resolvePath(file_path)
 
@@ -474,6 +543,9 @@ function handleWriteFile(args) {
 }
 
 function handleCreateFile(args) {
+  const isolationError = requireWorktreeForWrite()
+  if (isolationError) return isolationError
+
   const { file_path, content } = args
   const fullPath = resolvePath(file_path)
 
@@ -493,6 +565,9 @@ function handleCreateFile(args) {
 }
 
 function handleDeleteFile(args) {
+  const isolationError = requireWorktreeForWrite()
+  if (isolationError) return isolationError
+
   const { file_path } = args
   const fullPath = resolvePath(file_path)
 
@@ -537,6 +612,9 @@ async function handleToolCall(name, args) {
 
     try {
       const result = await bridgeRequest(name, args, timeout)
+      if (name === 'enter_worktree') {
+        updateCurrentWorkDirFromResult(result)
+      }
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }
     } catch (err) {
       return { isError: true, content: [{ type: 'text', text: `Bridge error (${name}): ${err.message}` }] }

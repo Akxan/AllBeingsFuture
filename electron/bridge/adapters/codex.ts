@@ -366,10 +366,10 @@ export class CodexAdapter {
     })
   }
 
-  private emitTextChunk(text: string): void {
+  private emitTextChunk(text: string, messageKind: 'assistant' | 'agent' = 'assistant'): void {
     if (!text) return
     this.currentText += text
-    this.emit({ id: this.currentRequestId, event: 'delta', text })
+    this.emit({ id: this.currentRequestId, event: 'delta', text, messageKind })
   }
 
   private appendReasoningDelta(itemId: string | undefined, text: string): void {
@@ -395,7 +395,7 @@ export class CodexAdapter {
       case 'commandExecution':
         return { name: 'run_shell', input: { command: item.command, cwd: item.cwd, processId: item.processId } }
       case 'fileChange':
-        return { name: 'apply_patch', input: { changes: item.changes } }
+        return { name: 'apply_patch', input: { ...item } }
       case 'mcpToolCall':
         return { name: `mcp__${item.server || 'server'}__${item.tool || 'tool'}`, input: item.arguments || {} }
       case 'dynamicToolCall':
@@ -420,10 +420,11 @@ export class CodexAdapter {
   private handleItemCompleted(item: any): void {
     if (!item || typeof item !== 'object') return
 
-    if (item.type === 'agentMessage' && typeof item.text === 'string') {
+    if ((item.type === 'agentMessage' || item.type === 'assistantMessage') && typeof item.text === 'string') {
       const seen = this.itemTextLengths.get(item.id) || 0
       const remaining = item.text.slice(seen)
-      if (remaining) this.emitTextChunk(remaining)
+      const messageKind = item.type === 'agentMessage' ? 'agent' : 'assistant'
+      if (remaining) this.emitTextChunk(remaining, messageKind)
       this.itemTextLengths.set(item.id, item.text.length)
       return
     }
@@ -473,7 +474,8 @@ export class CodexAdapter {
             const seen = this.itemTextLengths.get(params.itemId) || 0
             this.itemTextLengths.set(params.itemId, seen + text.length)
           }
-          this.emitTextChunk(text)
+          const messageKind = method === 'item/agentMessage/delta' ? 'agent' : 'assistant'
+          this.emitTextChunk(text, messageKind)
         }
         break
       }
@@ -485,7 +487,10 @@ export class CodexAdapter {
       case 'item/agentMessage/added':
       case 'item/agentMessage/created': {
         const text = this.extractTextFromParams(params)
-        this.emitTextChunk(text)
+        const messageKind = method === 'item/agentMessage/added' || method === 'item/agentMessage/created'
+          ? 'agent'
+          : 'assistant'
+        this.emitTextChunk(text, messageKind)
         break
       }
 
@@ -551,7 +556,7 @@ export class CodexAdapter {
     const eventType = data.type || data.event
 
     if (eventType === 'agent_message_delta' && data.delta) {
-      this.emitTextChunk(data.delta)
+      this.emitTextChunk(data.delta, 'agent')
       return
     }
 
@@ -561,12 +566,12 @@ export class CodexAdapter {
     }
 
     if (eventType === 'message' && data.content) {
-      this.emitTextChunk(data.content)
+      this.emitTextChunk(data.content, 'assistant')
       return
     }
 
     if (eventType === 'delta' && data.text) {
-      this.emitTextChunk(data.text)
+      this.emitTextChunk(data.text, 'assistant')
       return
     }
 

@@ -28,42 +28,47 @@ export default function SessionItem({ session, selected, onSelect, onResume, onE
   return (
     <div
       className={[
-        'group relative border-b border-[#1e1e1e] px-3 py-2.5 transition-all duration-150 cursor-pointer',
+        'group relative rounded-xl border p-2.5 transition-all duration-200 cursor-pointer',
         selected
-          ? 'bg-[#171717] border-l-2 border-l-[#ff4f1a]'
-          : 'hover:bg-[#111]',
+          ? 'border-blue-500/25 bg-blue-500/[0.08] shadow-[0_2px_12px_rgba(59,130,246,0.12)]'
+          : 'border-white/[0.04] bg-white/[0.015] hover:border-white/[0.1] hover:bg-white/[0.04] hover:shadow-[0_2px_8px_rgba(0,0,0,0.15)]',
       ].join(' ')}
       data-session-id={session.id}
       onClick={() => onSelect(session.id)}
     >
-      {/* No selected indicator — handled by left border on container */}
+      {selected && (
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 h-8 w-[3px] rounded-r-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.4)] animate-scale-in origin-left" />
+      )}
 
-      {/* Main content */}
       <div className="flex items-stretch gap-2">
         <div className="flex min-w-0 flex-1 items-start gap-2.5 px-1 py-0.5">
-          {/* Status indicator */}
           <div className="relative mt-1 shrink-0">
-            <div className={['w-[6px] h-[6px]', isActive ? 'bg-[#3eb550]' : 'bg-[#333]'].join(' ')} />
+            <div className={['h-2.5 w-2.5 rounded-full ring-2', isActive ? 'bg-emerald-400 ring-emerald-400/20' : 'bg-gray-600 ring-gray-600/20'].join(' ')} />
+            {isActive && <div className="absolute inset-0 h-2.5 w-2.5 rounded-full bg-emerald-400 animate-ping opacity-30" />}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <Bot size={13} className={`shrink-0 ${selected ? 'text-blue-400' : 'text-blue-400/50'}`} />
-              <p className={`truncate text-[12px] font-500 leading-tight ${selected ? 'text-[#e8e4de]' : 'text-[#aaa]'}`}>{session.name}</p>
+              <p className={`truncate text-[13px] font-medium leading-tight ${selected ? 'text-gray-100' : 'text-gray-300'}`}>{session.name}</p>
             </div>
-            <p className="mt-1 truncate text-[11px] text-gray-500 leading-tight">{getShortPath(session.workingDirectory)}</p>
+            <p className="mt-1 truncate text-[11px] leading-tight text-gray-500">{getShortPath(session.workingDirectory)}</p>
             <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
-              <span className="border border-[#2e2e2e] bg-[#171717] px-1.5 py-0.5 text-[9px] uppercase tracking-widest text-[#666] font-600">
+              <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-medium uppercase tracking-wider text-gray-400">
                 {session.providerId}
               </span>
-              <span className={`text-[9px] uppercase tracking-widest font-600 ${isActive ? 'text-[#3eb550]' : 'text-[#444]'}`}>
+              <span className={[
+                'rounded-md px-1.5 py-0.5 font-medium',
+                isActive ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/15' : 'bg-white/[0.03] text-gray-500',
+              ].join(' ')}>
                 {STATUS_LABELS[session.status] || session.status}
               </span>
-              <span className="text-[#3a3a3a] text-[9px] tabular-nums">{formatSessionTime(session)}</span>
+              <span className="text-gray-600">{modeLabels[session.mode] || session.mode}</span>
+              <span className="tabular-nums text-gray-600">{formatSessionTime(session)}</span>
               {parentBinding && (
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); onSelect(parentBinding.parentSessionId) }}
-                  className="inline-flex items-center gap-0.5 rounded-md border border-purple-400/15 bg-purple-500/[0.08] px-1.5 py-0.5 text-[10px] text-purple-300 font-medium transition-all hover:bg-purple-500/15 hover:text-purple-200"
+                  className="inline-flex items-center gap-0.5 rounded-md border border-purple-400/15 bg-purple-500/[0.08] px-1.5 py-0.5 text-[10px] font-medium text-purple-300 transition-all hover:bg-purple-500/15 hover:text-purple-200"
                   title={`来自: ${parentSession?.name || parentBinding.parentSessionId}`}
                 >
                   <ArrowUpLeft size={9} />
@@ -78,17 +83,14 @@ export default function SessionItem({ session, selected, onSelect, onResume, onE
                   <span className="max-w-[100px] truncate">{session.worktreeBranch}</span>
                 </div>
                 {session.worktreeMerged && (
-                  <span className="rounded-md bg-green-900/30 px-1 py-0.5 text-[9px] text-green-400 font-medium">已合并</span>
+                  <span className="rounded-md bg-green-900/30 px-1 py-0.5 text-[9px] font-medium text-green-400">已合并</span>
                 )}
               </div>
             )}
           </div>
         </div>
 
-        <div
-          className="flex flex-col gap-1 opacity-100 md:opacity-0 md:transition-all md:duration-200 md:group-hover:opacity-100"
-          onClick={(e) => e.stopPropagation()}
-        >
+        <div className="flex flex-col gap-1 opacity-100 md:opacity-0 md:transition-all md:duration-200 md:group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
           {!isActive && onResume && (
             <button
               type="button"
@@ -122,7 +124,6 @@ export default function SessionItem({ session, selected, onSelect, onResume, onE
         </div>
       </div>
 
-      {/* Agent sub-list: displayed below the main content as a collapsible section */}
       {agents && agents.length > 0 && (
         <AgentSubList agents={agents} onSelectSession={onSelect} />
       )}

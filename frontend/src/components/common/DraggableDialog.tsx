@@ -43,7 +43,6 @@ export default function DraggableDialog({
     setZIndex(nextZ())
   }, [])
 
-  // ESC to close
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -54,16 +53,14 @@ export default function DraggableDialog({
 
   const content = (
     <>
-      {/* Backdrop */}
       {showBackdrop && (
         <div
-          className="fixed inset-0 bg-black/70"
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm"
           style={{ zIndex: zIndex - 1 }}
           onClick={closeOnBackdropClick ? onClose : undefined}
         />
       )}
 
-      {/* Dialog */}
       <div
         ref={dialogRef}
         role="dialog"
@@ -71,7 +68,7 @@ export default function DraggableDialog({
         aria-labelledby={testId ? `${testId}-title` : undefined}
         data-testid={testId}
         className={[
-          'fixed flex flex-col overflow-hidden border border-[#2e2e2e] bg-[#111]',
+          'fixed flex flex-col overflow-hidden rounded-2xl border border-white/[0.08] bg-[#0d1117]/98 shadow-[0_24px_64px_rgba(0,0,0,0.5)] backdrop-blur-xl',
           widthClass,
           heightClass,
           className,
@@ -83,27 +80,26 @@ export default function DraggableDialog({
         }}
         onMouseDown={bringToFront}
       >
-        {/* Title bar - drag handle */}
         <div
           className={[
-            'flex shrink-0 items-center justify-between border-b border-[#2e2e2e] px-5 py-3',
+            'flex shrink-0 items-center justify-between border-b border-white/[0.06] px-5 py-3',
             isDragging ? 'cursor-grabbing' : 'cursor-grab',
           ].join(' ')}
           onMouseDown={handleMouseDown}
         >
           <div className="flex items-center gap-3">
             {icon && (
-              <span className="flex h-7 w-7 items-center justify-center border border-[#2e2e2e] bg-[#1a1a1a] text-[#ff4f1a]">
+              <span className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/[0.08] bg-blue-500/10 text-blue-300">
                 {icon}
               </span>
             )}
             <div>
               {subtitle && (
-                <p className="text-[9px] uppercase tracking-[0.25em] text-[#444]">{subtitle}</p>
+                <p className="text-[10px] uppercase tracking-[0.25em] text-slate-500">{subtitle}</p>
               )}
               <h2
                 id={testId ? `${testId}-title` : undefined}
-                className="text-[13px] font-600 text-[#e8e4de]"
+                className="text-base font-semibold text-white"
               >
                 {title}
               </h2>
@@ -112,15 +108,14 @@ export default function DraggableDialog({
           <button
             type="button"
             aria-label="关闭"
-            className="flex h-7 w-7 items-center justify-center text-[#444] transition-colors hover:bg-[#1a1a1a] hover:text-[#888]"
+            className="flex h-7 w-7 items-center justify-center rounded-lg text-gray-500 transition-all duration-200 hover:bg-white/[0.08] hover:text-white"
             onClick={onClose}
           >
-            <X size={14} />
+            <X size={16} />
           </button>
         </div>
 
-        {/* Content */}
-        <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
+        <div className="min-h-0 flex flex-1 flex-col overflow-hidden">
           {children}
         </div>
       </div>

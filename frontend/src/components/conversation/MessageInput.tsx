@@ -175,6 +175,18 @@ function MessageInput({
     reader.readAsDataURL(file)
   }, [focusEditor])
 
+  useEffect(() => {
+    const subscribe = window.electronAPI?.on
+    if (typeof subscribe !== 'function') return
+
+    return subscribe('files-dropped', (paths: string[] = []) => {
+      paths.forEach((path) => {
+        if (path) void addFileByPath(path)
+      })
+      focusEditor()
+    })
+  }, [addFileByPath, focusEditor])
+
   const buildMessage = useCallback((): QueuedMessage | null => {
     const text = value.trim()
     if (!text && images.length === 0 && files.length === 0) return null
@@ -211,7 +223,6 @@ function MessageInput({
     clearInput()
 
     if (streaming) {
-      // AI is busy — queue the message
       setMessageQueue((q) => [...q, msg])
       return
     }
@@ -219,7 +230,6 @@ function MessageInput({
     await doSendMessage(msg)
   }, [buildMessage, clearInput, disabled, doSendMessage, streaming])
 
-  // Auto-send queued messages when streaming ends
   const prevStreamingRef = useRef(streaming)
   const sendingRef = useRef(false)
   useEffect(() => {
@@ -229,7 +239,6 @@ function MessageInput({
       setMessageQueue(rest)
       doSendMessage(next)
         .catch(() => {
-          // Send failed — restore the message at front of queue
           setMessageQueue((q) => [next, ...q])
         })
         .finally(() => { sendingRef.current = false })
@@ -336,7 +345,7 @@ function MessageInput({
 
   return (
     <div
-      className="relative shrink-0 border-t border-[#2e2e2e] bg-[#0c0c0c] px-4 py-3"
+      className="relative shrink-0 border-t border-white/[0.06] bg-[#0b1019]/85 px-4 py-3 backdrop-blur-sm"
       data-file-drop-target="message-input"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
@@ -352,7 +361,6 @@ function MessageInput({
         </div>
       )}
 
-      {/* Queued messages — shown above the editor */}
       {messageQueue.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {messageQueue.map((msg, index) => (
@@ -360,7 +368,7 @@ function MessageInput({
               key={index}
               className="group flex items-center gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.05] px-2.5 py-1.5 text-xs text-amber-300/80"
             >
-              <span className="text-[10px] text-amber-500/60 font-medium shrink-0">#{index + 1}</span>
+              <span className="shrink-0 text-[10px] font-medium text-amber-500/60">#{index + 1}</span>
               <span className="max-w-[200px] truncate">
                 {msg.text.length > 30 ? msg.text.slice(0, 30) + '...' : msg.text}
               </span>
@@ -491,7 +499,7 @@ function MessageInput({
           {stickerOpen && (
             <div
               ref={stickerRef}
-              className="absolute bottom-full left-0 z-50 mb-2 w-[380px] max-h-[440px] overflow-hidden rounded-2xl border border-white/[0.08] bg-gray-900/95 shadow-2xl shadow-black/40 backdrop-blur-xl"
+              className="absolute bottom-full left-0 z-50 mb-2 max-h-[440px] w-[380px] overflow-hidden rounded-2xl border border-white/[0.08] bg-gray-900/95 shadow-2xl shadow-black/40 backdrop-blur-xl"
             >
               <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2">
                 <span className="text-xs font-medium text-gray-400">表情包</span>
@@ -542,7 +550,7 @@ function MessageInput({
             type="button"
             disabled={disabled || !hasContent}
             onClick={() => void submit()}
-            className="flex h-[42px] w-[42px] shrink-0 items-center justify-center bg-[#ff4f1a] text-white transition-all duration-150 hover:bg-[#e63d06] disabled:cursor-not-allowed disabled:opacity-30 active:scale-95"
+            className="flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-blue-500 text-white shadow-lg shadow-blue-500/20 transition-all duration-200 hover:bg-blue-400 hover:shadow-blue-500/30 disabled:cursor-not-allowed disabled:opacity-30 disabled:shadow-none active:scale-95"
             aria-label="发送消息"
           >
             <SendHorizonal size={16} />
